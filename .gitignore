@@ -1,0 +1,42 @@
+# ESP-IDF build outputs
+build/
+sdkconfig
+sdkconfig.old
+*.map
+*.elf
+*.bin
+*.hex
+
+# Dependencies managed by ESP-IDF component manager
+managed_components/
+dependencies.lock
+
+# IDE / editor
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.env
+venv/
+
+# OTA server logs / uploads
+ota_files/apps/*.bin
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake

@@ -1,0 +1,14 @@
+# Enforce LF line endings for all text files.
+# This prevents the "python\r: No such file or directory" error
+# when using ESP-IDF scripts inside WSL.
+
+* text=auto eol=lf
+
+# Binary files - never convert line endings
+*.bin binary
+*.elf binary
+*.hex binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.gz binary

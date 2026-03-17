@@ -1,0 +1,23 @@
+# BYUI eBadge Project Configuration
+
+menu "Project Configuration"
+
+    config WIFI_SSID
+        string "Wi-Fi SSID"
+        default "BYUI_Visitor"
+        help
+            SSID of the Wi-Fi network to connect to.
+
+    config WIFI_PASSWORD
+        string "Wi-Fi Password (leave empty for open network)"
+        default ""
+        help
+            WPA/WPA2 password. Leave blank for open networks.
+
+    config WIFI_MAXIMUM_RETRY
+        int "Maximum Wi-Fi retry attempts"
+        default 5
+        help
+            Number of times to retry connecting before giving up.
+
+endmenu

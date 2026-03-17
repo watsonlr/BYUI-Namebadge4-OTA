@@ -1,0 +1,12 @@
+{
+  "apps": [
+    {
+      "name": "My Game",
+      "version": 1,
+      "url": "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/apps/my_game.bin",
+      "size": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "icon": "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/icons/my_game_icon.bin"
+    }
+  ]
+}

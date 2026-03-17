@@ -1,0 +1,18 @@
+# BYUI eBadge V3.0 — ESP32-S3 Partition Table (4 MB Flash)
+# 2 OTA slots (A/B), each 1.25 MB — factory + ota_0 + ota_1 = 3.75 MB
+#
+# user_data is a DEDICATED NVS PARTITION at the top of flash (0x3E0000).
+# It stores user-entered config: nickname, email, WiFi SSID/pass, manifest URL.
+# It is NEVER touched by OTA.  If a user flashes their own firmware, this
+# partition remains intact and readable via:
+#   nvs_flash_init_partition("user_data");
+#   nvs_open_from_partition("user_data", "badge_cfg", NVS_READONLY, &h);
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+otadata,    data, ota,      0xf000,   0x2000,
+phy_init,   data, phy,      0x11000,  0x1000,
+factory,    app,  factory,  0x20000,  0x140000,
+ota_0,      app,  ota_0,    0x160000, 0x140000,
+ota_1,      app,  ota_1,    0x2A0000, 0x140000,
+user_data,  data, nvs,      0x3E0000, 0x6000,
