@@ -6,8 +6,8 @@
  * printable ASCII range (0x20–0x7F).  Each font byte is one pixel row;
  * within each byte bit-0 is the leftmost pixel (LSB-left convention).
  *
- * Pin assignments from HARDWARE.md (BYUI eBadge V3.0):
- *   CS=9  DC=13  RST=48  CLK=12  MOSI=11  MISO=10
+ * Pin assignments from HARDWARE.md (BYUI eBadge V4.0):
+ *   CS=0  DC=45  RST=1  CLK=46  MOSI=3  (write-only, no MISO)
  */
 
 #include "display.h"
@@ -21,12 +21,12 @@
 #include "esp_log.h"
 
 /* ── Pin definitions ─────────────────────────────────────────────── */
-#define DISP_PIN_CS    9
-#define DISP_PIN_DC    13
-#define DISP_PIN_RST   48
-#define DISP_PIN_CLK   12
-#define DISP_PIN_MOSI  11
-#define DISP_PIN_MISO  10
+#define DISP_PIN_CS    0
+#define DISP_PIN_DC    45
+#define DISP_PIN_RST   1
+#define DISP_PIN_CLK   46
+#define DISP_PIN_MOSI  3
+#define DISP_PIN_MISO  -1  /* write-only — no MISO on this display */
 #define DISP_SPI_HOST  SPI2_HOST
 #define DISP_SPI_FREQ  SPI_MASTER_FREQ_40M
 

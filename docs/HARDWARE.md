@@ -72,7 +72,7 @@
 ## Peripheral Reference
 
 
-### Display — ILI9341 TFT LCD (SPI2)
+### Display — ILI9341 TFT LCD (SPI2, write-only)
 
 | Signal | GPIO |
 |--------|------|

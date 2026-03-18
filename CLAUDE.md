@@ -22,9 +22,9 @@ Dev log + chat notes: [docs/DEV_CHAT.md](docs/DEV_CHAT.md)
 | Flash | 4 MB embedded (XMC) |
 | PSRAM | 2 MB octal PSRAM (available after bootloader) |
 | Display | ILI9341 2.4" TFT, 240×320, SPI2 |
-| Controls | Up/Down/Left/Right (D-pad) + A (GPIO 38) + B (GPIO 18) — active LOW |
-| LEDs | RGB (GPIO 4/5/6) + WS2813B strip (GPIO 7, RMT DMA) |
-| SPI2 | MOSI=11, MISO=10, CLK=12; Display DC=2, CS=13, RST=9; SD CS=3 |
+| Controls | Up/Down/Left/Right (D-pad) + A (GPIO 34) + B (GPIO 33) — active LOW |
+| LEDs | RGB (GPIO 2/4/5) + WS2813B strip (GPIO 7, RMT DMA) |
+| SPI2 | MOSI=3, CLK=46; Display DC=45, CS=0, RST=1 (write-only, no MISO) |
 | USB | J1=CP2102N UART (programming + charging); J2=ESP native USB, **device-mode only** |
 
 USB host mode is **not possible** on V4 — CC pins are fixed pull-downs (5.1 kΩ to GND). No VBUS output path.
