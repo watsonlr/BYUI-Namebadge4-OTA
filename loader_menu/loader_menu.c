@@ -89,12 +89,15 @@ static void draw_item(int idx, bool selected)
 {
     int y = item_y(idx);
 
-    uint16_t bg = selected ? COLOR_BYUI_BLUE : DISPLAY_COLOR_WHITE;
+    uint16_t bg = selected ? DISPLAY_COLOR_RED : DISPLAY_COLOR_WHITE;
     uint16_t fg = selected ? DISPLAY_COLOR_WHITE : COLOR_DARK;
 
     display_fill_rect(0, y, DISPLAY_W, ITEM_H, bg);
 
     if (selected) {
+        /* 3 px yellow border top and bottom for extra visibility */
+        display_fill_rect(0, y,                  DISPLAY_W, 3, COLOR_YELLOW);
+        display_fill_rect(0, y + ITEM_H - 3,     DISPLAY_W, 3, COLOR_YELLOW);
         display_draw_string(ITEM_ARROW_X, y + 10, ">",
                             COLOR_YELLOW, bg, ITEM_TEXT_SCALE);
     }
@@ -180,7 +183,7 @@ static void draw_icon_tile(int row, const ota_app_entry_t *app,
     int ty = icon_tile_y(row);
 
     /* Background / selection frame colour fills the full 320-px width. */
-    uint16_t frame = selected ? COLOR_BYUI_BLUE : DISPLAY_RGB565(20, 20, 20);
+    uint16_t frame = selected ? DISPLAY_COLOR_RED : DISPLAY_RGB565(20, 20, 20);
     display_fill_rect(0, ty, DISPLAY_W, ICON_SLOT_H, frame);
 
     if (icon_pixels) {
@@ -212,7 +215,6 @@ static void draw_icon_menu(const ota_catalog_t *catalog,
                            uint16_t * const icons[],
                            int selection, int scroll)
 {
-    display_fill(DISPLAY_COLOR_WHITE);
     for (int row = 0; row < VISIBLE_ICONS; row++) {
         int idx = scroll + row;
         if (idx >= catalog->count) {
@@ -322,9 +324,9 @@ static void action_ota_download(void)
         char prog[40];
         snprintf(prog, sizeof(prog), "Loading icon %d/%d...",
                  i + 1, s_catalog.count);
-        int pw = (int)strlen(prog) * DISPLAY_FONT_W;
-        display_draw_string((DISPLAY_W - pw) / 2, 116,
-                            prog, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+        int pw = (int)strlen(prog) * DISPLAY_FONT_W * 2;
+        display_draw_string((DISPLAY_W - pw) / 2, 108,
+                            prog, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
 
         s_icons[i] = ota_manager_fetch_icon(s_catalog.apps[i].icon_url);
         ESP_LOGI(TAG, "icon[%d]: %s", i, s_icons[i] ? "loaded" : "NULL (will use text fallback)");

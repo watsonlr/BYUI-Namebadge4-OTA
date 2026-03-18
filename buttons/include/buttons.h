@@ -5,9 +5,9 @@ void buttons_flush_events(void);
  *
  * All buttons are active-LOW with internal pull-ups.
  *
- *   GPIO 17 — Up       GPIO 16 — Down
- *   GPIO 14 — Left     GPIO 15 — Right
- *   GPIO 38 — A        GPIO 18 — B
+ *   GPIO 11 — Up       GPIO 47 — Down
+ *   GPIO 21 — Left     GPIO 10 — Right
+ *   GPIO 34 — A        GPIO 33 — B
  */
 
 #pragma once

@@ -66,7 +66,7 @@ static EventGroupHandle_t s_wifi_eg   = NULL;
 static esp_netif_t       *s_sta_netif = NULL;
 static int                s_retries   = 0;
 
-/* ── Display helper ───────────────────────────────────────────────── */
+/* ── Display helpers ──────────────────────────────────────────────── */
 static void show_status(const char *line1, const char *line2)
 {
     display_fill(DISPLAY_COLOR_BLACK);
@@ -75,6 +75,76 @@ static void show_status(const char *line1, const char *line2)
                                           DISPLAY_COLOR_BLACK);
     if (line1) display_print(&ctx,  8, 108, line1);
     if (line2) display_print(&ctx,  8, 124, line2);
+}
+
+static void show_wifi_status(const char *label, const char *ssid)
+{
+    display_fill(DISPLAY_COLOR_BLACK);
+
+    /* Label at scale 2, centred (clamped to x=0 if too wide) */
+    int lw = (int)strlen(label) * DISPLAY_FONT_W * 2;
+    int lx = (DISPLAY_W - lw) / 2;
+    if (lx < 0) lx = 0;
+    display_draw_string(lx, 72, label,
+                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+
+    /* SSID at scale 3, centred (clamped) */
+    if (ssid && ssid[0]) {
+        int nw = (int)strlen(ssid) * DISPLAY_FONT_W * 3;
+        int nx = (DISPLAY_W - nw) / 2;
+        if (nx < 0) nx = 0;
+        display_draw_string(nx, 104, ssid,
+                            DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 3);
+    }
+}
+
+#define PROG_BAR_X  20
+#define PROG_BAR_Y  130
+#define PROG_BAR_W  280
+#define PROG_BAR_H  24
+
+static void show_download_progress(const char *name, int pct,
+                                   int kb_done, int kb_total)
+{
+    display_fill(DISPLAY_COLOR_BLACK);
+
+    /* "Downloading..." at scale 2, centred */
+    const char *title = "Downloading...";
+    int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
+    display_draw_string((DISPLAY_W - tw) / 2, 72,
+                        title, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+
+    /* App name at scale 3 */
+    if (name && name[0]) {
+        int nw = (int)strlen(name) * DISPLAY_FONT_W * 3;
+        display_draw_string((DISPLAY_W - nw) / 2, 98,
+                            name, DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 3);
+    }
+
+    /* Progress bar fill */
+    int filled = (pct * PROG_BAR_W) / 100;
+    display_fill_rect(PROG_BAR_X, PROG_BAR_Y,
+                      filled, PROG_BAR_H, DISPLAY_COLOR_GREEN);
+    display_fill_rect(PROG_BAR_X + filled, PROG_BAR_Y,
+                      PROG_BAR_W - filled, PROG_BAR_H,
+                      DISPLAY_RGB565(40, 40, 40));
+
+    /* White border (4 strips) */
+    display_fill_rect(PROG_BAR_X - 2, PROG_BAR_Y - 2, PROG_BAR_W + 4, 2,
+                      DISPLAY_COLOR_WHITE);
+    display_fill_rect(PROG_BAR_X - 2, PROG_BAR_Y + PROG_BAR_H, PROG_BAR_W + 4, 2,
+                      DISPLAY_COLOR_WHITE);
+    display_fill_rect(PROG_BAR_X - 2, PROG_BAR_Y - 2, 2, PROG_BAR_H + 4,
+                      DISPLAY_COLOR_WHITE);
+    display_fill_rect(PROG_BAR_X + PROG_BAR_W, PROG_BAR_Y - 2, 2, PROG_BAR_H + 4,
+                      DISPLAY_COLOR_WHITE);
+
+    /* Percentage + KB text */
+    char pct_buf[40];
+    snprintf(pct_buf, sizeof(pct_buf), "%d%%  (%d / %d KB)", pct, kb_done, kb_total);
+    int pw = (int)strlen(pct_buf) * DISPLAY_FONT_W;
+    display_draw_string((DISPLAY_W - pw) / 2, 164,
+                        pct_buf, DISPLAY_COLOR_YELLOW, DISPLAY_COLOR_BLACK, 1);
 }
 
 /* ── WiFi event handler ───────────────────────────────────────────── */
@@ -239,7 +309,8 @@ static esp_err_t http_get_binary(const char *url, uint8_t *out, size_t out_max,
 static uint8_t s_ota_chunk[OTA_CHUNK_SIZE];  /* static → BSS, not stack */
 
 static esp_err_t http_stream_and_flash(const char *url, int expected_size,
-                                        const char *sha256_expected)
+                                        const char *sha256_expected,
+                                        const char *name)
 {
     /* Open OTA partition for writing */
     const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
@@ -304,11 +375,10 @@ static esp_err_t http_stream_and_flash(const char *url, int expected_size,
         total += n;
 
         int pct = (int)(100LL * total / expected_size);
-        if (pct / 5 != last_pct / 5) {
+        if (pct / 2 != last_pct / 2) {
             last_pct = pct;
-            char prog[32];
-            snprintf(prog, sizeof(prog), "%d%%  (%d KB)", pct, total / 1024);
-            show_status("Downloading...", prog);
+            show_download_progress(name, pct,
+                                   total / 1024, expected_size / 1024);
         }
     }
 
@@ -444,12 +514,12 @@ ota_result_t ota_manager_fetch_catalog(ota_catalog_t *out)
     }
 
     /* Connect to WiFi */
-    show_status("Connecting to WiFi...", ssid);
+    show_wifi_status("Connecting to WiFi...", ssid);
     ESP_LOGI(TAG, "Connecting to SSID: %s", ssid);
 
     if (!wifi_sta_connect(ssid, pass)) {
         ESP_LOGE(TAG, "WiFi connect failed");
-        show_status("WiFi connect failed", ssid);
+        show_wifi_status("WiFi connect failed", ssid);
         wifi_sta_disconnect();
         return OTA_RESULT_NO_WIFI;
     }
@@ -569,8 +639,9 @@ ota_result_t ota_manager_flash_app(const ota_app_entry_t *app)
     }
 
     /* Stream + hash + flash */
-    show_status("Downloading...", app->name);
-    esp_err_t err = http_stream_and_flash(app->url, app->size, app->sha256);
+    show_download_progress(app->name, 0, 0, app->size / 1024);
+    esp_err_t err = http_stream_and_flash(app->url, app->size, app->sha256,
+                                          app->name);
     if (err != ESP_OK) {
         return (err == ESP_ERR_OTA_VALIDATE_FAILED)
                ? OTA_RESULT_VERIFY_FAIL

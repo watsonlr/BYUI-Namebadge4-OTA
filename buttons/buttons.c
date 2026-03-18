@@ -9,12 +9,12 @@
 #define TAG "buttons"
 
 /* ── GPIO assignments ──────────────────────────────────────────────── */
-#define GPIO_UP     17
-#define GPIO_DOWN   16
-#define GPIO_LEFT   14
-#define GPIO_RIGHT  15
-#define GPIO_A      38
-#define GPIO_B      18
+#define GPIO_UP     11
+#define GPIO_DOWN   47
+#define GPIO_LEFT   21
+#define GPIO_RIGHT  10
+#define GPIO_A      34
+#define GPIO_B      33
 
 #define POLL_MS     10
 #define DEBOUNCE_MS 20
