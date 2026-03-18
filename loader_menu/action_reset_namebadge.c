@@ -29,8 +29,8 @@ void action_reset_namebadge(void) {
             nvs_flash_erase_partition(WIFI_CONFIG_NVS_PARTITION);
             nvs_flash_init_partition(WIFI_CONFIG_NVS_PARTITION);
             display_fill(DISPLAY_COLOR_BLACK);
-            display_draw_string(40, 100, "Customization erased!", DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
-            display_draw_string(40, 140, "Starting setup...", DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+            display_draw_string(40, 100, "Customization erased!", DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+            display_draw_string(40, 116, "Starting setup...", DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
             vTaskDelay(pdMS_TO_TICKS(1500));
             portal_mode_run(0);
             break;

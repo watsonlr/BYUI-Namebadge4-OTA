@@ -88,13 +88,13 @@ static void show_wifi_status(const char *label, const char *ssid)
     display_draw_string(lx, 72, label,
                         DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
 
-    /* SSID at scale 3, centred (clamped) */
+    /* SSID at scale 2, centred (clamped) */
     if (ssid && ssid[0]) {
-        int nw = (int)strlen(ssid) * DISPLAY_FONT_W * 3;
+        int nw = (int)strlen(ssid) * DISPLAY_FONT_W * 2;
         int nx = (DISPLAY_W - nw) / 2;
         if (nx < 0) nx = 0;
         display_draw_string(nx, 104, ssid,
-                            DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 3);
+                            DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 2);
     }
 }
 
