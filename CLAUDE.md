@@ -56,19 +56,23 @@ NVS namespace: `wifi_cfg`; partition label: `user_data`.
 
 ## Boot Decision Flow
 
+The A+B escape-to-factory logic lives in the **custom 2nd-stage bootloader**
+(`bootloader_components/factory_switch/`), not in the factory app itself.
+
 ```
-Power On → ROM → 2nd-stage bootloader → factory loader app
-  buttons_init() + buttons_held(A+B, 150 ms)?
-    YES → Factory Loader UI (display, portal, menu)
-    NO  → valid OTA app? → esp_ota_set_boot_partition(ota_x) → restart
-                           student app boots in <200 ms
-        → no OTA app    → Factory Loader UI
+Power On → ROM → 2nd-stage bootloader (factory_switch hook)
+  A+B held 150 ms? → erase otadata sectors (0xF000–0x10FFF)
+  otadata valid?   → boot ota_0 / ota_1   (student app)
+  otadata blank?   → boot factory          (this loader)
 ```
+
+**Factory Loader always runs the UI** — it never redirects to an OTA app.
+The bootloader handles that redirect before the factory app even starts.
 
 **Factory Loader UI flow:**
 1. Full peripheral init (display, LEDs, NVS)
 2. Splash screen + BYUI-blue LED glow
-3. `wifi_config_is_configured()`? — if NO → captive portal → then menu; if YES → welcome screen → A+B 5s reset window → menu
+3. `wifi_config_is_configured()`? — if NO → captive portal → then menu; if YES → menu
 
 ---
 
@@ -106,6 +110,12 @@ Power On → ROM → 2nd-stage bootloader → factory loader app
 - **PSRAM:** available only after 2nd-stage bootloader. Used for OTA buffers, JSON parsing, display framebuffers.
 - **Factory partition:** `esp_https_ota` hardcodes writes to OTA slots — factory cannot be overwritten by OTA. Only `idf.py flash` over USB can overwrite it.
 - **Rollback:** apps must call `esp_ota_mark_app_valid_cancel_rollback()` after successful startup; crash before that → automatic fallback to factory.
+- **A+B factory escape:** implemented in `bootloader_components/factory_switch/factory_switch.c` via `bootloader_after_init()` hook. Checks GPIO 33 (B) + GPIO 34 (A) held 150 ms; if so, erases otadata sectors so bootloader falls back to factory. Both pins are above GPIO 21 (non-LP) and read reliably in bootloader context. Previous hook used wrong GPIO 38.
+- **Button debounce — LP pad issue:** GPIOs 0–21 are LP I/O pads. A `while (gpio_get_level() == 0)` spin-wait inside the button task can block forever on these pads after a software reset, even after `gpio_config()`. UP=GPIO 11 and LEFT=GPIO 21 are affected. Solution: time-based state machine using `esp_timer_get_time()` — no spin-waits anywhere. Task stack must be **4096 bytes** (not 2048) because `esp_timer_get_time()` has a deeper call chain than expected.
+- **Button debounce — state machine:** `STATE_IDLE → STATE_DEBOUNCING → STATE_FIRED`. Both press (30 ms continuous LOW) and release (30 ms continuous HIGH) are debounced independently. One physical press = exactly one queue event, regardless of contact bounce.
+- **WiFi reconfigure after failed OTA:** `ota_manager_fetch_catalog()` initialises `esp_netif` and the default event loop but does not deinit them on failure. Calling `portal_mode_run()` afterward causes `wifi_config_start()` → `start_softap()` → `ESP_ERROR_CHECK(esp_netif_init())` to abort with `ESP_ERR_INVALID_STATE`. Fix: erase `user_data` NVS partition then `esp_restart()` — the factory loader reboots clean and auto-runs the portal since `wifi_config_is_configured()` returns false (nick key gone).
+- **Display text width at scale 2:** `DISPLAY_FONT_W = 8`, scale 2 = 16 px/char, display width = 320 px → **max 20 chars per line** at scale 2. Strings longer than 20 chars overflow the display. The centering formula `(DISPLAY_W - len*FONT_W*scale)/2` goes negative if string is too wide — clamp or shorten the string.
+- **NVS namespace:** `wifi_config_is_configured()` checks the `nick` key in partition `user_data`, namespace `badge_cfg` (not `wifi_cfg` as previously noted).
 
 ---
 
@@ -127,9 +137,12 @@ Power On → ROM → 2nd-stage bootloader → factory loader app
 
 ---
 
-## Current Status (as of 2026-03-15)
+## Current Status (as of 2026-03-20)
 
-Recent commits indicate active work on **boot behavior** (`fixing the boot behavior still`).
-Boot flow: A+B held → factory UI; else → launch OTA app if valid.
-Portal, NVS persistence, welcome screen, and A+B factory reset window are implemented.
-Loader menu, OTA download, SD card, and recovery (Tier 2) are partially stubbed.
+- **Boot flow complete:** Custom bootloader (`factory_switch`) erases otadata when A+B held 150 ms at reset; factory loader always shows the UI. Students can always escape a broken OTA app by holding A+B on reset — no code required in OTA apps.
+- **Button driver rewritten:** Time-based state machine in `buttons/buttons.c`. Press debounce + release debounce both 30 ms. Task stack 4096 bytes. Reliable on all 6 GPIOs including LP-range pads.
+- **Loader menu working:** Up/Down navigation, A/Right to select, B to move down. All four items functional (OTA download, SD stub, bare-metal info, reset namebadge).
+- **OTA download working:** Fetches catalog, shows icon tiles, streams firmware, reboots into student app.
+- **WiFi fail → reconfigure:** If WiFi connect fails during OTA download, screen shows "WiFi Connect Failed / A: Reconfigure WiFi". Pressing A erases user_data NVS and restarts — factory loader re-runs the full QR-code portal.
+- **SD card load and SD recovery:** stubbed ("coming soon" screens).
+- **Welcome screen / A+B 5 s reset window:** previously described but not currently in main.c — factory loader goes directly to portal (if unconfigured) or menu (if configured).

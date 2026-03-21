@@ -106,22 +106,42 @@ static void show_wifi_status(const char *label, const char *ssid)
 static void show_download_progress(const char *name, int pct,
                                    int kb_done, int kb_total)
 {
-    display_fill(DISPLAY_COLOR_BLACK);
+    /* On the first call (pct == 0) draw the static background elements:
+     * title, app name, bar border, and initial black fill.
+     * On subsequent calls only the bar fill and percentage text are
+     * redrawn — no full-screen clear, so there is no flash. */
+    static bool s_bg_drawn = false;
+    if (pct == 0) s_bg_drawn = false;   /* reset for each new download */
 
-    /* "Downloading..." at scale 2, centred */
-    const char *title = "Downloading...";
-    int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
-    display_draw_string((DISPLAY_W - tw) / 2, 72,
-                        title, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+    if (!s_bg_drawn) {
+        s_bg_drawn = true;
+        display_fill(DISPLAY_COLOR_BLACK);
 
-    /* App name at scale 3 */
-    if (name && name[0]) {
-        int nw = (int)strlen(name) * DISPLAY_FONT_W * 3;
-        display_draw_string((DISPLAY_W - nw) / 2, 98,
-                            name, DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 3);
+        /* "Downloading..." at scale 2, centred */
+        const char *title = "Downloading...";
+        int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
+        display_draw_string((DISPLAY_W - tw) / 2, 72,
+                            title, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+
+        /* App name at scale 3 */
+        if (name && name[0]) {
+            int nw = (int)strlen(name) * DISPLAY_FONT_W * 3;
+            display_draw_string((DISPLAY_W - nw) / 2, 98,
+                                name, DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 3);
+        }
+
+        /* White border (4 strips) — drawn once, never touched again */
+        display_fill_rect(PROG_BAR_X - 2, PROG_BAR_Y - 2, PROG_BAR_W + 4, 2,
+                          DISPLAY_COLOR_WHITE);
+        display_fill_rect(PROG_BAR_X - 2, PROG_BAR_Y + PROG_BAR_H, PROG_BAR_W + 4, 2,
+                          DISPLAY_COLOR_WHITE);
+        display_fill_rect(PROG_BAR_X - 2, PROG_BAR_Y - 2, 2, PROG_BAR_H + 4,
+                          DISPLAY_COLOR_WHITE);
+        display_fill_rect(PROG_BAR_X + PROG_BAR_W, PROG_BAR_Y - 2, 2, PROG_BAR_H + 4,
+                          DISPLAY_COLOR_WHITE);
     }
 
-    /* Progress bar fill */
+    /* Update only the progress bar fill — no border, no title, no flash. */
     int filled = (pct * PROG_BAR_W) / 100;
     display_fill_rect(PROG_BAR_X, PROG_BAR_Y,
                       filled, PROG_BAR_H, DISPLAY_COLOR_GREEN);
@@ -129,20 +149,12 @@ static void show_download_progress(const char *name, int pct,
                       PROG_BAR_W - filled, PROG_BAR_H,
                       DISPLAY_RGB565(40, 40, 40));
 
-    /* White border (4 strips) */
-    display_fill_rect(PROG_BAR_X - 2, PROG_BAR_Y - 2, PROG_BAR_W + 4, 2,
-                      DISPLAY_COLOR_WHITE);
-    display_fill_rect(PROG_BAR_X - 2, PROG_BAR_Y + PROG_BAR_H, PROG_BAR_W + 4, 2,
-                      DISPLAY_COLOR_WHITE);
-    display_fill_rect(PROG_BAR_X - 2, PROG_BAR_Y - 2, 2, PROG_BAR_H + 4,
-                      DISPLAY_COLOR_WHITE);
-    display_fill_rect(PROG_BAR_X + PROG_BAR_W, PROG_BAR_Y - 2, 2, PROG_BAR_H + 4,
-                      DISPLAY_COLOR_WHITE);
-
-    /* Percentage + KB text */
+    /* Overwrite the percentage line in-place (black bg clears old text). */
     char pct_buf[40];
     snprintf(pct_buf, sizeof(pct_buf), "%d%%  (%d / %d KB)", pct, kb_done, kb_total);
     int pw = (int)strlen(pct_buf) * DISPLAY_FONT_W;
+    /* Clear the text row before writing (handles shorter strings). */
+    display_fill_rect(0, 164, DISPLAY_W, DISPLAY_FONT_H, DISPLAY_COLOR_BLACK);
     display_draw_string((DISPLAY_W - pw) / 2, 164,
                         pct_buf, DISPLAY_COLOR_YELLOW, DISPLAY_COLOR_BLACK, 1);
 }

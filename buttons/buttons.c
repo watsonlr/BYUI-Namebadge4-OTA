@@ -5,6 +5,7 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #define TAG "buttons"
 
@@ -16,8 +17,8 @@
 #define GPIO_A      34
 #define GPIO_B      33
 
-#define POLL_MS     10
-#define DEBOUNCE_MS 20
+#define POLL_MS      10   /* task wakes every 10 ms                     */
+#define DEBOUNCE_MS  30   /* button must be held this long to register  */
 
 static struct {
     gpio_num_t pin;
@@ -35,40 +36,86 @@ static struct {
 
 static QueueHandle_t button_event_queue = NULL;
 
-/* ── Public API ────────────────────────────────────────────────────── */
+/* ── Button task ────────────────────────────────────────────────────── *
+ *
+ * Per-button state machine — no blocking inside the poll loop:
+ *
+ *   IDLE            button reads HIGH (released)
+ *   DEBOUNCING      button went LOW, waiting for DEBOUNCE_MS of continuous low
+ *   FIRED           event posted; waiting for a full release before re-arming
+ *
+ * This eliminates both press-bounce and release-bounce re-triggers.
+ * LP-range pads (GPIO 0-21) are sampled only at the top of each poll cycle
+ * through gpio_get_level(), which is safe after gpio_config() has run in
+ * the app context.  No gpio_get_level() is called inside a spin-wait, so
+ * the task can never block on an unexpectedly-sticky LP pad.
+ */
+typedef enum { STATE_IDLE, STATE_DEBOUNCING, STATE_FIRED } btn_state_t;
 
 static void button_task(void *arg)
 {
-    button_t prev_state = BTN_NONE;
+    btn_state_t state[BTN_COUNT];
+    int64_t     press_since[BTN_COUNT];   /* when button went LOW (press side)  */
+    int64_t     release_since[BTN_COUNT]; /* when button went HIGH (release side) */
+
+    for (int i = 0; i < (int)BTN_COUNT; i++) {
+        state[i]         = STATE_IDLE;
+        press_since[i]   = 0;
+        release_since[i] = 0;
+    }
+
     ESP_LOGI(TAG, "button_task started (core %d)", xPortGetCoreID());
+
     for (;;) {
-        button_t curr_state = BTN_NONE;
+        vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+
+        int64_t now = esp_timer_get_time();   /* microseconds */
+
         for (int i = 0; i < (int)BTN_COUNT; i++) {
-            if (gpio_get_level(BTN_MAP[i].pin) == 0) {
-                curr_state |= BTN_MAP[i].bit;
-            }
-        }
-        // Detect new presses
-        for (int i = 0; i < (int)BTN_COUNT; i++) {
-            bool was_pressed = (prev_state & BTN_MAP[i].bit);
-            bool is_pressed = (curr_state & BTN_MAP[i].bit);
-            if (!was_pressed && is_pressed) {
-                // Debounce: wait 10ms, confirm still pressed
-                vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_MS));
-                if (gpio_get_level(BTN_MAP[i].pin) == 0) {
+            bool low = (gpio_get_level(BTN_MAP[i].pin) == 0);
+
+            switch (state[i]) {
+            case STATE_IDLE:
+                if (low) {
+                    state[i]       = STATE_DEBOUNCING;
+                    press_since[i] = now;
+                }
+                break;
+
+            case STATE_DEBOUNCING:
+                if (!low) {
+                    /* Released before debounce elapsed — was a glitch */
+                    state[i] = STATE_IDLE;
+                } else if ((now - press_since[i]) >= (int64_t)DEBOUNCE_MS * 1000) {
+                    /* Held long enough — fire event */
                     button_t event = BTN_MAP[i].bit;
-                    ESP_LOGI(TAG, "Button pressed: 0x%02X, posting to queue (core %d)", event, xPortGetCoreID());
-                    BaseType_t sent = xQueueSend(button_event_queue, &event, 0);
-                    if (sent != pdTRUE) {
-                        ESP_LOGW(TAG, "Queue full! Could not post event 0x%02X", event);
+                    ESP_LOGI(TAG, "Button event: 0x%02X (core %d)", event, xPortGetCoreID());
+                    if (xQueueSend(button_event_queue, &event, 0) != pdTRUE)
+                        ESP_LOGW(TAG, "Queue full — dropped 0x%02X", event);
+                    state[i] = STATE_FIRED;
+                }
+                break;
+
+            case STATE_FIRED:
+                /* Require the button to stay HIGH for DEBOUNCE_MS before
+                 * re-arming.  Any LOW bounce resets the release timer so
+                 * a second event cannot fire from the same physical press. */
+                if (low) {
+                    release_since[i] = 0;
+                } else {
+                    if (release_since[i] == 0) release_since[i] = now;
+                    else if ((now - release_since[i]) >= (int64_t)DEBOUNCE_MS * 1000) {
+                        state[i]         = STATE_IDLE;
+                        release_since[i] = 0;
                     }
                 }
+                break;
             }
         }
-        prev_state = curr_state;
-        vTaskDelay(pdMS_TO_TICKS(POLL_MS));
     }
 }
+
+/* ── Public API ─────────────────────────────────────────────────────── */
 
 void buttons_init(void)
 {
@@ -88,20 +135,17 @@ void buttons_init(void)
     /* Allow pull-ups to charge before any reads. */
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // Create event queue
     button_event_queue = xQueueCreate(BUTTON_QUEUE_LEN, sizeof(button_t));
-    // Start polling task
-    xTaskCreatePinnedToCore(button_task, "button_task", 2048, NULL, 10, NULL, 0);
-    ESP_LOGI(TAG, "buttons ready (queue event mode)");
+    xTaskCreatePinnedToCore(button_task, "button_task", 4096, NULL, 10, NULL, 0);
+    ESP_LOGI(TAG, "buttons ready");
 }
 
 button_t buttons_read(void)
 {
     button_t state = BTN_NONE;
     for (int i = 0; i < (int)BTN_COUNT; i++) {
-        if (gpio_get_level(BTN_MAP[i].pin) == 0) {
+        if (gpio_get_level(BTN_MAP[i].pin) == 0)
             state |= BTN_MAP[i].bit;
-        }
     }
     return state;
 }
@@ -117,25 +161,20 @@ bool buttons_held(button_t mask, uint32_t duration_ms)
     return true;
 }
 
-// Flush any queued button events (phantom presses) after boot
-void buttons_flush_events(void) {
+void buttons_flush_events(void)
+{
     button_t event;
     int flushed = 0;
-    while (xQueueReceive(button_event_queue, &event, 0) == pdTRUE) {
+    while (xQueueReceive(button_event_queue, &event, 0) == pdTRUE)
         flushed++;
-    }
-    ESP_LOGI(TAG, "buttons_flush_events: flushed %d events after boot", flushed);
+    ESP_LOGI(TAG, "buttons_flush_events: flushed %d events", flushed);
 }
 
-// Wait for any button event (returns bitmask of pressed button, or BTN_NONE on timeout)
 button_t buttons_wait_event(uint32_t timeout_ms)
 {
     button_t event = BTN_NONE;
-    ESP_LOGI(TAG, "buttons_wait_event: waiting for event (timeout=%u ms, core %d)", timeout_ms, xPortGetCoreID());
-    if (xQueueReceive(button_event_queue, &event, timeout_ms ? pdMS_TO_TICKS(timeout_ms) : portMAX_DELAY) == pdTRUE) {
-        ESP_LOGI(TAG, "buttons_wait_event: got event 0x%02X (core %d)", event, xPortGetCoreID());
+    TickType_t ticks = timeout_ms ? pdMS_TO_TICKS(timeout_ms) : portMAX_DELAY;
+    if (xQueueReceive(button_event_queue, &event, ticks) == pdTRUE)
         return event;
-    }
-    ESP_LOGI(TAG, "buttons_wait_event: timeout (core %d)", xPortGetCoreID());
     return BTN_NONE;
 }

@@ -341,15 +341,17 @@ bool portal_mode_run(int timeout_s)
         _DRAW_SETUP_BG();
 
         if (connected) {
+            /* Full-width green box: 8 px padding, two scale-2 white lines */
+            display_fill_rect(0, 88, DISPLAY_W, 52, DISPLAY_COLOR_GREEN);
             display_text_ctx_t ok = DISPLAY_CTX(DISPLAY_FONT_SANS, 2,
-                                                 DISPLAY_COLOR_GREEN,
-                                                 DISPLAY_COLOR_WHITE);
-            display_print(&ok, centre_x("WiFi Connected", 2), 100,
+                                                 DISPLAY_COLOR_WHITE,
+                                                 DISPLAY_COLOR_GREEN);
+            display_print(&ok, centre_x("WiFi Connected", 2), 96,
                           "WiFi Connected");
-            display_text_ctx_t ip_ctx = DISPLAY_CTX(DISPLAY_FONT_SANS, 1,
-                                                     DISPLAY_COLOR_GREEN,
-                                                     DISPLAY_COLOR_WHITE);
-            display_print(&ip_ctx, centre_x(ip_str, 1), 122, ip_str);
+            display_text_ctx_t ip_ctx = DISPLAY_CTX(DISPLAY_FONT_SANS, 2,
+                                                     DISPLAY_COLOR_WHITE,
+                                                     DISPLAY_COLOR_GREEN);
+            display_print(&ip_ctx, centre_x(ip_str, 2), 116, ip_str);
 
             display_text_ctx_t a_ctx = DISPLAY_CTX(DISPLAY_FONT_SANS, 2,
                                                     DISPLAY_COLOR_BLACK,

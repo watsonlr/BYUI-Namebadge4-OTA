@@ -296,10 +296,30 @@ static void action_ota_download(void)
     /* ── Step 1: fetch catalog ─────────────────────────────────────── */
     ota_result_t r = ota_manager_fetch_catalog(&s_catalog);
 
+    if (r == OTA_RESULT_NO_WIFI) {
+        display_fill(DISPLAY_COLOR_BLACK);
+        draw_header_titled("OTA App Download");
+        /* Each line ≤ 19 chars so scale-2 text (16 px/char) fits 320 px. */
+        const char *l1 = "WiFi Connect Failed";   /* 19 × 16 = 304 px */
+        const char *l2 = "A: Reconfigure WiFi";   /* 19 × 16 = 304 px */
+        display_draw_string((DISPLAY_W - (int)strlen(l1) * DISPLAY_FONT_W * 2) / 2,
+                            95,  l1, DISPLAY_COLOR_RED,   DISPLAY_COLOR_BLACK, 2);
+        display_draw_string((DISPLAY_W - (int)strlen(l2) * DISPLAY_FONT_W * 2) / 2,
+                            135, l2, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+        button_t btn;
+        do { btn = buttons_wait_event(0); } while (!(btn & BTN_A));
+        /* Erase credentials so factory loader re-runs the portal on reboot.
+         * Calling portal_mode_run() here would fail — the OTA manager left
+         * esp_netif and the event loop initialised, and wifi_config_start()
+         * uses ESP_ERROR_CHECK which aborts on ESP_ERR_INVALID_STATE. */
+        nvs_flash_erase_partition(WIFI_CONFIG_NVS_PARTITION);
+        esp_restart();
+        return; /* unreachable — silences compiler warning */
+    }
+
     if (r != OTA_RESULT_OK) {
         const char *msg;
         switch (r) {
-        case OTA_RESULT_NO_WIFI:       msg = "WiFi connect failed.";  break;
         case OTA_RESULT_NO_MANIFEST:   msg = "Manifest not found.";   break;
         case OTA_RESULT_EMPTY_CATALOG: msg = "No apps in catalog.";   break;
         default:                       msg = "Catalog fetch failed."; break;
