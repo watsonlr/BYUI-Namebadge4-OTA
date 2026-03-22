@@ -18,8 +18,9 @@
 #include <inttypes.h>
 
 #define TAG              "loader_menu"
-#define HW_VERSION       4    /* eBadge hardware revision          */
-#define LOADER_VERSION   0    /* loader software release           */
+/* Version defines live in loader_menu.h so factory_self_update can read them. */
+#define HW_VERSION       LOADER_HW_VERSION
+#define LOADER_VERSION   LOADER_SW_VERSION
 
 /* ── Palette ───────────────────────────────────────────────────────── */
 #define COLOR_BYUI_BLUE   DISPLAY_RGB565(  0,  46, 120)

@@ -9,6 +9,7 @@
 #include "portal_mode.h"
 #include "wifi_config.h"
 #include "loader_menu.h"
+#include "factory_self_update.h"
 #include "leds.h"
 
 #define TAG "factory_loader"
@@ -44,6 +45,11 @@ static void run_factory_loader(void)
     } else {
         ESP_LOGI(TAG, "Already configured — entering loader menu");
     }
+
+    /* Check for a newer factory loader and apply it if available.
+     * Silently returns if no update is found or WiFi fails.
+     * Does NOT return if an update is downloaded (calls esp_restart). */
+    factory_self_update_check();
 
     /* Hand off to the interactive loader menu. */
     loader_menu_run();

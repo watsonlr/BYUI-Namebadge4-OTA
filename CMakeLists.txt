@@ -7,7 +7,7 @@ set(IDF_TARGET "esp32s3")
 # Use the custom partition table from the project root
 set(PARTITION_CSV_PATH "${CMAKE_SOURCE_DIR}/partitions.csv")
 
-set(EXTRA_COMPONENT_DIRS "buttons" "loader_menu" "splash_screen" "display" "wifi_config" "portal_mode" "ota_manager" "leds")
+set(EXTRA_COMPONENT_DIRS "buttons" "loader_menu" "splash_screen" "display" "wifi_config" "portal_mode" "ota_manager" "leds" "factory_self_update")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 

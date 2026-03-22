@@ -19,6 +19,12 @@
 extern "C" {
 #endif
 
+/** Hardware revision of the eBadge PCB this loader was built for. */
+#define LOADER_HW_VERSION   4
+
+/** Factory-loader software release number (increment when updating). */
+#define LOADER_SW_VERSION   0
+
 /**
  * @brief Display the loader menu and handle user input indefinitely.
  *
