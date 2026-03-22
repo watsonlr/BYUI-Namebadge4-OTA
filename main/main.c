@@ -34,6 +34,11 @@ static void run_factory_loader(void)
     leds_clear();
     leds_show();
 
+    /* Start the background loader-update check before the splash so the
+     * WiFi connect + manifest fetch runs concurrently with the animation.
+     * Does nothing if WiFi is not yet configured. */
+    factory_self_update_begin();
+
     splash_screen_run();
     /* Flush any phantom button events queued during boot. */
     buttons_flush_events();
@@ -46,10 +51,9 @@ static void run_factory_loader(void)
         ESP_LOGI(TAG, "Already configured — entering loader menu");
     }
 
-    /* Check for a newer factory loader and apply it if available.
-     * Silently returns if no update is found or WiFi fails.
-     * Does NOT return if an update is downloaded (calls esp_restart). */
-    factory_self_update_check();
+    /* Check the background task result. Shows confirmation screen only if
+     * a newer loader was found; otherwise returns immediately with no delay. */
+    factory_self_update_finish();
 
     /* Hand off to the interactive loader menu. */
     loader_menu_run();

@@ -1,24 +1,11 @@
 /**
  * @file factory_self_update.h
- * @brief Automatic factory-loader self-update over WiFi.
+ * @brief Factory-loader self-update over WiFi.
  *
- * Call factory_self_update_check() once at startup (after WiFi credentials
- * are confirmed to be configured) and before loader_menu_run().
- *
- * Behaviour:
- *   1. Connects to the saved WiFi AP.
- *   2. Fetches the loader manifest from a hardcoded URL.
- *   3. If the manifest describes a newer loader for the same HW revision:
- *        a. Downloads the binary to the inactive OTA slot (raw staging).
- *        b. Verifies SHA-256.
- *        c. Writes an RTC-memory flag so factory_switch can apply the update.
- *        d. Calls esp_restart() — this function does NOT return.
- *   4. If no update is needed (or any step fails): disconnects WiFi silently
- *      and returns.  The loader menu then runs as usual.
- *
- * The update is applied by factory_switch.c in the bootloader on the next
- * (software) reset: the staged binary is copied sector-by-sector into the
- * factory partition.  otadata is left intact so the student app is preserved.
+ * Call factory_self_update_begin() before splash_screen_run() and
+ * factory_self_update_finish() after it.  The WiFi check runs silently
+ * in the background during the splash so there is no added boot time.
+ * A confirmation screen is shown only if a newer loader is found.
  */
 
 #pragma once
@@ -28,12 +15,27 @@ extern "C" {
 #endif
 
 /**
- * @brief Check for and (if available) download a factory-loader update.
+ * @brief Start the background update check.
  *
- * Silently returns on failure or when no update is available.
- * Does NOT return if an update is downloaded and applied (esp_restart called).
+ * Launches a FreeRTOS task that connects to WiFi and fetches the loader
+ * manifest.  Does nothing if WiFi credentials are not yet configured
+ * (safe to call unconditionally before the portal check).
+ * No display I/O — safe to call while splash_screen_run() is active.
  */
-void factory_self_update_check(void);
+void factory_self_update_begin(void);
+
+/**
+ * @brief Finish the update check and act on the result.
+ *
+ * Waits for the background task to complete (normally already done by
+ * the time the splash finishes).  If a newer loader version was found,
+ * shows a confirmation screen.
+ *   - A pressed: downloads and applies the update (calls esp_restart —
+ *                this function does NOT return).
+ *   - B pressed: skips silently and returns.
+ * If no update is available or begin() was never called: returns immediately.
+ */
+void factory_self_update_finish(void);
 
 #ifdef __cplusplus
 }

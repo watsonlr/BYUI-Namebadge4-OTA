@@ -1,21 +1,21 @@
 /**
  * @file factory_self_update.c
- * @brief Automatic factory-loader self-update over WiFi.
+ * @brief Factory-loader self-update over WiFi.
  *
- * Flow:
- *   1. Init netif + event loop (idempotent — tolerates already-created state).
- *   2. Read SSID/PASS from user_data NVS.
- *   3. Connect to WiFi STA.
- *   4. GET manifest JSON from LOADER_MANIFEST_URL.
- *   5. Parse: hw_version, loader_version, binary_url, size, sha256.
- *   6. If hw_version == LOADER_HW_VERSION && loader_version > LOADER_SW_VERSION:
- *        a. Find inactive OTA partition for staging.
- *        b. Erase and stream-download binary into staging partition (raw write,
- *           no esp_ota_end — otadata is never touched).
- *        c. Verify SHA-256.
- *        d. Write RTC flag at RTC_FLAG_ADDR (magic + staging_offset + size + ~magic).
- *        e. Disconnect WiFi, display update notice, esp_restart().
- *   7. Otherwise: disconnect WiFi silently and return.
+ * The check runs in a background FreeRTOS task that starts concurrently
+ * with the splash screen so there is zero added boot time:
+ *
+ *   factory_self_update_begin()   — call BEFORE splash_screen_run()
+ *     Reads NVS credentials, connects WiFi, fetches + parses the manifest,
+ *     and stores the best available version.  No display I/O.
+ *     Does nothing (safe no-op) if WiFi is not configured.
+ *
+ *   factory_self_update_finish()  — call AFTER splash_screen_run()
+ *     Waits for the background task to complete (should already be done).
+ *     If a newer version was found: shows a confirmation screen with blinking
+ *     red LEDs and waits for A (update) or B (skip).
+ *     If no update or user skips: returns silently.
+ *     Does not return if the user confirms and the download succeeds.
  *
  * The bootloader (factory_switch.c) checks the RTC flag on the next software
  * reset, copies the staged binary to the factory partition, and clears the flag.
@@ -25,6 +25,8 @@
 #include "loader_menu.h"    /* LOADER_HW_VERSION, LOADER_SW_VERSION */
 #include "wifi_config.h"    /* NVS partition / namespace / key constants */
 #include "display.h"
+#include "buttons.h"
+#include "leds.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -51,22 +53,31 @@
 
 #define TAG  "factory_self_update"
 
-/* ── Manifest URL (placeholder — replace with actual hosting URL) ─── */
-#define LOADER_MANIFEST_URL  "https://TODO/loader_manifest.json"
+#define LOADER_MANIFEST_URL \
+    "https://watsonlr.github.io/namebadge-apps/bootloader_downloads/loader_manifest.json"
 
-/* ── RTC slow memory flag — shared between app and bootloader ──────── *
- * Address 0x600FFFF0: last 16 bytes of RTC slow DRAM (8 KB region that
- * starts at 0x600FE000).  This area is outside the FreeRTOS heap and
- * retains its value through a software reset (cleared on hardware reset). */
+/* ── RTC slow memory flag ─────────────────────────────────────────── */
 #define RTC_FLAG_ADDR   0x600FFFF0u
 #define UPDATE_MAGIC    0xFA510A0Bu
 
 typedef struct {
-    uint32_t magic;           /* UPDATE_MAGIC                      */
-    uint32_t staging_offset;  /* flash byte address of staging slot */
-    uint32_t binary_size;     /* byte count of staged binary        */
-    uint32_t magic_inv;       /* ~magic, used as second check word  */
+    uint32_t magic;
+    uint32_t staging_offset;
+    uint32_t binary_size;
+    uint32_t magic_inv;
 } factory_update_flag_t;
+
+/* ── Background check result ─────────────────────────────────────── */
+#define CHECK_DONE_BIT  BIT0
+
+typedef enum { CHECK_NONE, CHECK_NO_UPDATE, CHECK_UPDATE_AVAILABLE } check_result_t;
+
+static EventGroupHandle_t s_check_eg     = NULL;
+static check_result_t     s_result       = CHECK_NONE;
+static int                s_best_version = -1;
+static int                s_best_size    = 0;
+static char               s_bin_url[257];
+static char               s_sha256[65];
 
 /* ── WiFi STA ─────────────────────────────────────────────────────── */
 #define WIFI_CONNECTED_BIT  BIT0
@@ -83,7 +94,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
-
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         if (s_retries < WIFI_MAX_RETRIES) {
             s_retries++;
@@ -91,7 +101,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         } else {
             xEventGroupSetBits(s_wifi_eg, WIFI_FAIL_BIT);
         }
-
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         s_retries = 0;
         xEventGroupSetBits(s_wifi_eg, WIFI_CONNECTED_BIT);
@@ -145,7 +154,7 @@ static void wifi_disconnect(void)
     }
 }
 
-/* ── HTTP: fetch manifest JSON (small text) ──────────────────────── */
+/* ── HTTP: fetch manifest JSON ───────────────────────────────────── */
 #define MANIFEST_BUF_SIZE  1024
 static char s_manifest_json[MANIFEST_BUF_SIZE];
 
@@ -187,26 +196,23 @@ static bool fetch_manifest(void)
 
 /* ── HTTP: stream binary to OTA staging partition ─────────────────── */
 #define CHUNK_SIZE  8192
-static uint8_t s_chunk[CHUNK_SIZE];   /* static — too large for stack */
+static uint8_t s_chunk[CHUNK_SIZE];
 
-static bool download_to_staging(const char *url, int expected_size,
-                                  const char *sha256_expected,
-                                  const esp_partition_t *staging)
+static bool download_to_staging(const esp_partition_t *staging)
 {
-    /* Erase only the sectors we need */
-    uint32_t erase_size = ((uint32_t)expected_size + 4095u) & ~4095u;
+    uint32_t erase_size = ((uint32_t)s_best_size + 4095u) & ~4095u;
     if (erase_size > staging->size) {
         ESP_LOGE(TAG, "Binary too large for staging partition");
         return false;
     }
     esp_err_t err = esp_partition_erase_range(staging, 0, erase_size);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Staging erase failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Staging erase: %s", esp_err_to_name(err));
         return false;
     }
 
     esp_http_client_config_t cfg = {
-        .url                   = url,
+        .url                   = s_bin_url,
         .crt_bundle_attach     = esp_crt_bundle_attach,
         .timeout_ms            = 120000,
         .buffer_size           = CHUNK_SIZE,
@@ -229,11 +235,11 @@ static bool download_to_staging(const char *url, int expected_size,
     mbedtls_sha256_init(&sha_ctx);
     mbedtls_sha256_starts(&sha_ctx, 0);
 
-    int total = 0;
-    bool ok   = true;
+    int  total = 0;
+    bool ok    = true;
 
-    while (total < expected_size) {
-        int want = expected_size - total;
+    while (total < s_best_size) {
+        int want = s_best_size - total;
         if (want > CHUNK_SIZE) want = CHUNK_SIZE;
 
         int n = esp_http_client_read(client, (char *)s_chunk, want);
@@ -248,24 +254,21 @@ static bool download_to_staging(const char *url, int expected_size,
             ok = false;
             break;
         }
-
         total += n;
 
-        /* Simple progress log every 64 KB */
         if ((total % (64 * 1024)) < CHUNK_SIZE)
-            ESP_LOGI(TAG, "Downloaded %d / %d KB", total / 1024, expected_size / 1024);
+            ESP_LOGI(TAG, "Downloaded %d / %d KB", total / 1024, s_best_size / 1024);
     }
 
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
-    if (!ok || total != expected_size) {
-        ESP_LOGE(TAG, "Download incomplete: %d / %d B", total, expected_size);
+    if (!ok || total != s_best_size) {
+        ESP_LOGE(TAG, "Download incomplete: %d / %d B", total, s_best_size);
         mbedtls_sha256_free(&sha_ctx);
         return false;
     }
 
-    /* Verify SHA-256 */
     uint8_t hash[32];
     mbedtls_sha256_finish(&sha_ctx, hash);
     mbedtls_sha256_free(&sha_ctx);
@@ -273,9 +276,9 @@ static bool download_to_staging(const char *url, int expected_size,
     char computed[65] = {0};
     for (int i = 0; i < 32; i++) snprintf(computed + 2 * i, 3, "%02x", hash[i]);
 
-    if (strcmp(computed, sha256_expected) != 0) {
+    if (strcmp(computed, s_sha256) != 0) {
         ESP_LOGE(TAG, "SHA-256 mismatch\n  expected: %s\n  computed: %s",
-                 sha256_expected, computed);
+                 s_sha256, computed);
         return false;
     }
 
@@ -284,6 +287,9 @@ static bool download_to_staging(const char *url, int expected_size,
 }
 
 /* ── Display helpers ──────────────────────────────────────────────── */
+#define COLOR_HEADER_BG  DISPLAY_RGB565(  0,  36,  96)
+#define COLOR_FOOTER_BG  DISPLAY_RGB565( 24,  24,  24)
+
 static void show_msg(const char *line1, const char *line2)
 {
     display_fill(DISPLAY_COLOR_BLACK);
@@ -299,82 +305,110 @@ static void show_msg(const char *line1, const char *line2)
     }
 }
 
-/* ── Public entry point ────────────────────────────────────────────── */
-
-void factory_self_update_check(void)
+/* ── Confirmation screen — shown only when an update is available ─── */
+static bool confirm_update(void)
 {
-    /* Init network stack — both calls tolerate already-initialised state. */
-    esp_err_t e = esp_netif_init();
-    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "esp_netif_init: %s — skipping update check", esp_err_to_name(e));
-        return;
-    }
-    e = esp_event_loop_create_default();
-    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "esp_event_loop_create_default: %s — skipping update check",
-                 esp_err_to_name(e));
-        return;
-    }
+    display_fill(DISPLAY_COLOR_BLACK);
 
-    /* Read WiFi credentials from NVS */
+    display_fill_rect(0, 0, DISPLAY_W, 30, COLOR_HEADER_BG);
+    const char *title = "Loader Update Found";
+    int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
+    display_draw_string((DISPLAY_W - tw) / 2, 7, title,
+                        DISPLAY_COLOR_WHITE, COLOR_HEADER_BG, 2);
+
+    char cur_line[32], new_line[32];
+    snprintf(cur_line, sizeof(cur_line), "Current:   v%d.%d",
+             LOADER_HW_VERSION, LOADER_SW_VERSION);
+    snprintf(new_line, sizeof(new_line), "Available: v%d.%d",
+             LOADER_HW_VERSION, s_best_version);
+
+    display_draw_string(20, 60,  "A new bootloader is",
+                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+    display_draw_string(20, 76,  "available:",
+                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+    display_draw_string(20, 104, cur_line,
+                        DISPLAY_COLOR_WHITE,  DISPLAY_COLOR_BLACK, 2);
+    display_draw_string(20, 132, new_line,
+                        DISPLAY_COLOR_YELLOW, DISPLAY_COLOR_BLACK, 2);
+    display_draw_string(20, 168, "Update now? (~30 sec)",
+                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+
+    display_fill_rect(0, 212, DISPLAY_W, 28, COLOR_FOOTER_BG);
+    const char *hint = "A:Update   B:Skip";
+    int hw = (int)strlen(hint) * DISPLAY_FONT_W;
+    display_draw_string((DISPLAY_W - hw) / 2, 220, hint,
+                        DISPLAY_COLOR_YELLOW, COLOR_FOOTER_BG, 1);
+
+    /* Blink dim red LEDs at ~1 Hz while waiting */
+    bool led_on = true;
+    leds_fill(8, 0, 0);
+    leds_show();
+
+    for (;;) {
+        button_t btn = buttons_wait_event(500);
+
+        if (btn & BTN_A) { leds_clear(); leds_show(); return true;  }
+        if (btn & BTN_B) { leds_clear(); leds_show(); return false; }
+
+        led_on = !led_on;
+        if (led_on) { leds_fill(8, 0, 0); } else { leds_clear(); }
+        leds_show();
+    }
+}
+
+/* ── Background check task ────────────────────────────────────────── *
+ * Runs concurrently with splash_screen_run().  No display I/O.       */
+static void check_task(void *arg)
+{
+    /* Init network stack — tolerates already-created state. */
+    esp_err_t e = esp_netif_init();
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) goto done_no_update;
+
+    e = esp_event_loop_create_default();
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) goto done_no_update;
+
+    /* Read credentials from NVS */
     esp_err_t ue = nvs_flash_init_partition(WIFI_CONFIG_NVS_PARTITION);
     if (ue == ESP_ERR_NVS_NO_FREE_PAGES || ue == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase_partition(WIFI_CONFIG_NVS_PARTITION);
         nvs_flash_init_partition(WIFI_CONFIG_NVS_PARTITION);
     }
 
-    char ssid[33] = {0};
-    char pass[65] = {0};
-
+    char ssid[33] = {0}, pass[65] = {0};
     nvs_handle_t h;
     if (nvs_open_from_partition(WIFI_CONFIG_NVS_PARTITION,
                                 WIFI_CONFIG_NVS_NAMESPACE,
-                                NVS_READONLY, &h) != ESP_OK) {
-        ESP_LOGW(TAG, "NVS open failed — skipping update check");
-        return;
-    }
+                                NVS_READONLY, &h) != ESP_OK) goto done_no_update;
     size_t n;
     n = sizeof(ssid); nvs_get_str(h, WIFI_CONFIG_NVS_KEY_SSID, ssid, &n);
     n = sizeof(pass); nvs_get_str(h, WIFI_CONFIG_NVS_KEY_PASS, pass, &n);
     nvs_close(h);
 
-    if (ssid[0] == '\0') {
-        ESP_LOGW(TAG, "No SSID configured — skipping update check");
-        return;
-    }
+    if (ssid[0] == '\0') goto done_no_update;
 
     /* Connect to WiFi */
-    show_msg("Checking for", "loader update...");
-    ESP_LOGI(TAG, "Connecting to '%s' to check for loader update", ssid);
-
+    ESP_LOGI(TAG, "Background: connecting to '%s'", ssid);
     if (!wifi_connect(ssid, pass)) {
-        ESP_LOGW(TAG, "WiFi connect failed — skipping update check");
+        ESP_LOGW(TAG, "Background: WiFi connect failed");
         wifi_disconnect();
-        return;
+        goto done_no_update;
     }
 
     /* Fetch manifest */
     if (!fetch_manifest()) {
-        ESP_LOGW(TAG, "Manifest fetch failed — skipping update check");
+        ESP_LOGW(TAG, "Background: manifest fetch failed");
         wifi_disconnect();
-        return;
+        goto done_no_update;
     }
 
-    /* Parse manifest JSON — expected format: array of version objects.
-     * Scan every entry, keep the one with:
-     *   hw_version == LOADER_HW_VERSION  AND  highest loader_version. */
+    /* Parse — find highest loader_version for our hw_version */
     cJSON *root = cJSON_Parse(s_manifest_json);
     if (!root || !cJSON_IsArray(root)) {
-        ESP_LOGW(TAG, "Manifest JSON parse error or not an array");
+        ESP_LOGW(TAG, "Background: manifest parse error");
         cJSON_Delete(root);
         wifi_disconnect();
-        return;
+        goto done_no_update;
     }
-
-    int         best_version = -1;
-    static char s_bin_url[257];
-    static char s_sha256[65];
-    int         best_size    = 0;
 
     cJSON *entry;
     cJSON_ArrayForEach(entry, root) {
@@ -386,72 +420,107 @@ void factory_self_update_check(void)
 
         if (!j_hw || !j_ldr || !cJSON_IsString(j_url) || !j_sz || !cJSON_IsString(j_sha))
             continue;
-        if (j_hw->valueint != LOADER_HW_VERSION)
-            continue;
-        if (j_ldr->valueint > best_version) {
-            best_version = j_ldr->valueint;
-            best_size    = j_sz->valueint;
+        if (j_hw->valueint != LOADER_HW_VERSION) continue;
+        if (j_ldr->valueint > s_best_version) {
+            s_best_version = j_ldr->valueint;
+            s_best_size    = j_sz->valueint;
             strlcpy(s_bin_url, j_url->valuestring, sizeof(s_bin_url));
             strlcpy(s_sha256,  j_sha->valuestring, sizeof(s_sha256));
         }
     }
     cJSON_Delete(root);
 
-    ESP_LOGI(TAG, "Best manifest entry for hw=%d: loader_version=%d (running=%d)",
-             LOADER_HW_VERSION, best_version, LOADER_SW_VERSION);
+    ESP_LOGI(TAG, "Background: best version=%d (running=%d)",
+             s_best_version, LOADER_SW_VERSION);
 
-    if (best_version <= LOADER_SW_VERSION) {
-        ESP_LOGI(TAG, "No loader update needed");
-        wifi_disconnect();
+    if (s_best_version > LOADER_SW_VERSION &&
+        s_best_size > 0 && s_bin_url[0] != '\0' && s_sha256[0] != '\0') {
+        /* Keep WiFi connected — finish() will use it for the download */
+        s_result = CHECK_UPDATE_AVAILABLE;
+        xEventGroupSetBits(s_check_eg, CHECK_DONE_BIT);
+        vTaskDelete(NULL);
         return;
     }
 
-    if (best_size <= 0 || s_bin_url[0] == '\0' || s_sha256[0] == '\0') {
-        ESP_LOGW(TAG, "Best entry missing required fields — skipping");
-        wifi_disconnect();
-        return;
-    }
-
-    ESP_LOGI(TAG, "Loader update available: v%d.%d → v%d.%d",
-             LOADER_HW_VERSION, LOADER_SW_VERSION, LOADER_HW_VERSION, best_version);
-
-    /* Find the inactive OTA partition for staging */
-    const esp_partition_t *staging = esp_ota_get_next_update_partition(NULL);
-    if (!staging) {
-        ESP_LOGE(TAG, "No inactive OTA partition available for staging");
-        wifi_disconnect();
-        return;
-    }
-    ESP_LOGI(TAG, "Staging to partition '%s' @ 0x%08" PRIx32 " (%"PRIu32" B available)",
-             staging->label, staging->address, staging->size);
-
-    /* Download and verify */
-    show_msg("Updating loader...", "Do not power off");
-    bool dl_ok = download_to_staging(s_bin_url, best_size, s_sha256, staging);
     wifi_disconnect();
 
-    if (!dl_ok) {
-        ESP_LOGE(TAG, "Download/verify failed — update aborted");
+done_no_update:
+    s_result = CHECK_NO_UPDATE;
+    xEventGroupSetBits(s_check_eg, CHECK_DONE_BIT);
+    vTaskDelete(NULL);
+}
+
+/* ── Public API ────────────────────────────────────────────────────── */
+
+void factory_self_update_begin(void)
+{
+    /* Only start if WiFi credentials exist — avoids conflict with portal. */
+    if (!wifi_config_is_configured()) {
+        ESP_LOGI(TAG, "Not configured — skipping update check");
+        return;
+    }
+
+    s_check_eg     = xEventGroupCreate();
+    s_result       = CHECK_NONE;
+    s_best_version = -1;
+    s_best_size    = 0;
+    s_bin_url[0]   = '\0';
+    s_sha256[0]    = '\0';
+
+    xTaskCreate(check_task, "fsu_check", 8192, NULL, 5, NULL);
+    ESP_LOGI(TAG, "Background update check started");
+}
+
+void factory_self_update_finish(void)
+{
+    /* Safe no-op if begin() was never called or not applicable */
+    if (s_check_eg == NULL) return;
+
+    /* Wait for the background task — should already be done by now */
+    xEventGroupWaitBits(s_check_eg, CHECK_DONE_BIT,
+                        pdFALSE, pdFALSE, pdMS_TO_TICKS(12000));
+    vEventGroupDelete(s_check_eg);
+    s_check_eg = NULL;
+
+    if (s_result != CHECK_UPDATE_AVAILABLE) return;
+
+    /* Update found — ask the user */
+    if (!confirm_update()) {
+        ESP_LOGI(TAG, "User declined loader update");
+        wifi_disconnect();
+        return;
+    }
+
+    /* Find inactive OTA partition for staging */
+    const esp_partition_t *staging = esp_ota_get_next_update_partition(NULL);
+    if (!staging) {
+        ESP_LOGE(TAG, "No inactive OTA partition for staging");
+        wifi_disconnect();
+        return;
+    }
+    ESP_LOGI(TAG, "Staging: '%s' @ 0x%08" PRIx32,
+             staging->label, staging->address);
+
+    show_msg("Updating loader...", "Do not power off");
+    bool ok = download_to_staging(staging);
+    wifi_disconnect();
+
+    if (!ok) {
+        ESP_LOGE(TAG, "Download/verify failed");
         show_msg("Update failed", "Continuing...");
         vTaskDelay(pdMS_TO_TICKS(2000));
         return;
     }
 
-    /* Write RTC flag for factory_switch to pick up on next boot.
-     * Write magic_inv first, then staging_offset, then binary_size,
-     * and magic last — so an incomplete write leaves an invalid flag. */
+    /* Arm RTC flag for factory_switch to apply on next boot */
     volatile factory_update_flag_t *flag =
             (volatile factory_update_flag_t *)RTC_FLAG_ADDR;
     flag->magic_inv      = ~UPDATE_MAGIC;
     flag->staging_offset = staging->address;
-    flag->binary_size    = (uint32_t)best_size;
-    flag->magic          = UPDATE_MAGIC;   /* arm the flag last */
+    flag->binary_size    = (uint32_t)s_best_size;
+    flag->magic          = UPDATE_MAGIC;
 
-    ESP_LOGI(TAG, "RTC flag set — restarting to apply update");
-
-    /* Brief on-screen notice before restart */
     show_msg("Applying update...", "Restarting now");
     vTaskDelay(pdMS_TO_TICKS(1500));
-
-    esp_restart();  /* software restart → factory_switch picks up the flag */
+    esp_restart();
 }

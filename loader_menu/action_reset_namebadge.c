@@ -1,6 +1,7 @@
 #include "loader_menu.h"
 #include "display.h"
 #include "buttons.h"
+#include "leds.h"
 #include "wifi_config.h"
 #include "nvs_flash.h"
 #include "esp_partition.h"
@@ -47,6 +48,26 @@ static bool wait_confirm(void)
         button_t btn = buttons_wait_event(0);
         if (btn & BTN_A) return true;
         if (btn & BTN_B) return false;
+    }
+}
+
+/* Like wait_confirm() but blinks all LEDs dim red at ~1 Hz as a warning.
+ * Turns LEDs off before returning regardless of which button was pressed. */
+static bool wait_confirm_led_warning(void)
+{
+    bool led_on = true;
+    leds_fill(8, 0, 0);
+    leds_show();
+
+    for (;;) {
+        button_t btn = buttons_wait_event(500);
+
+        if (btn & BTN_A) { leds_clear(); leds_show(); return true;  }
+        if (btn & BTN_B) { leds_clear(); leds_show(); return false; }
+
+        led_on = !led_on;
+        if (led_on) { leds_fill(8, 0, 0); } else { leds_clear(); }
+        leds_show();
     }
 }
 
@@ -105,7 +126,7 @@ void action_reset_board_factory(void)
     draw_confirm_screen("Full Factory Reset",
                         lines, sizeof(lines) / sizeof(lines[0]));
 
-    if (!wait_confirm()) return;
+    if (!wait_confirm_led_warning()) return;
 
     show_erasing();
     ESP_LOGI(TAG, "Erasing user_data, ota_0, ota_1, otadata");

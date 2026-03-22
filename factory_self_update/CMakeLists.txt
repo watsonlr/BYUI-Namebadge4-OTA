@@ -7,6 +7,6 @@ idf_component_register(
                 esp_http_client esp-tls
                 app_update esp_partition
                 mbedtls json
-                display loader_menu wifi_config
+                display buttons leds loader_menu wifi_config
                 esp_system
 )
