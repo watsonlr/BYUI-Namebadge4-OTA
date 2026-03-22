@@ -17,7 +17,9 @@
 #include <stdio.h>
 #include <inttypes.h>
 
-#define TAG  "loader_menu"
+#define TAG              "loader_menu"
+#define HW_VERSION       4    /* eBadge hardware revision          */
+#define LOADER_VERSION   0    /* loader software release           */
 
 /* ── Palette ───────────────────────────────────────────────────────── */
 #define COLOR_BYUI_BLUE   DISPLAY_RGB565(  0,  46, 120)
@@ -31,7 +33,7 @@
 #define HEADER_Y      0
 #define HEADER_H     30
 #define ITEMS_START  32          /* first pixel below header            */
-#define ITEM_H       36          /* 5 × 36 = 180 px                     */
+#define ITEM_H       30          /* 6 × 30 = 180 px                     */
 #define FOOTER_Y    212
 #define FOOTER_H     28
 
@@ -40,21 +42,21 @@
 #define ITEM_ARROW_X     8
 #define ITEM_TEXT_X     32
 
-#define NUM_ITEMS     4
+#define NUM_ITEMS     6
 #define VISIBLE_APPS  4          /* max app rows visible at once        */
 
 /* ── Main menu labels ──────────────────────────────────────────────── */
 static const char *ITEM_LABELS[NUM_ITEMS] = {
     "OTA App Download",
-    "Load from SD Card",
-    "Bare-metal / Flash",
-    "Update SD Recovery",   /* replaced by "Reset Namebadge" when configured */
+    "SDCard Apps",
+    "Reset Wifi/Config",
+    "Full Factory Reset",
+    "H/W Self-Tests",
+    "USB Program",
 };
 
-/* Item 3 swaps label when the badge is already set up. */
 static const char *item_label(int idx)
 {
-    if (idx == 3 && wifi_config_is_configured()) return "Reset Namebadge";
     return ITEM_LABELS[idx];
 }
 
@@ -98,18 +100,20 @@ static void draw_item(int idx, bool selected)
         /* 3 px yellow border top and bottom for extra visibility */
         display_fill_rect(0, y,                  DISPLAY_W, 3, COLOR_YELLOW);
         display_fill_rect(0, y + ITEM_H - 3,     DISPLAY_W, 3, COLOR_YELLOW);
-        display_draw_string(ITEM_ARROW_X, y + 10, ">",
+        display_draw_string(ITEM_ARROW_X, y + 7, ">",
                             COLOR_YELLOW, bg, ITEM_TEXT_SCALE);
     }
 
     char buf[32];
     snprintf(buf, sizeof(buf), "%s", item_label(idx));
-    display_draw_string(ITEM_TEXT_X, y + 10, buf, fg, bg, ITEM_TEXT_SCALE);
+    display_draw_string(ITEM_TEXT_X, y + 7, buf, fg, bg, ITEM_TEXT_SCALE);
 }
 
 static void draw_menu(int selected)
 {
-    draw_header_titled("BYUI Badge Loader");
+    char title[32];
+    snprintf(title, sizeof(title), "BYU-I Loader (v%d.%d)", HW_VERSION, LOADER_VERSION);
+    draw_header_titled(title);
     /* Fill the 2px gap between header and first item (y=30-31). */
     display_fill_rect(0, HEADER_H, DISPLAY_W, ITEMS_START - HEADER_H, DISPLAY_COLOR_BLACK);
     for (int i = 0; i < NUM_ITEMS; i++) {
@@ -433,6 +437,22 @@ static void action_bare_metal(void)
                      lines, sizeof(lines) / sizeof(lines[0]));
 }
 
+/* ── Action: H/W Self-Tests (stub) ────────────────────────────────── */
+
+static void action_hw_self_tests(void)
+{
+    const char *lines[] = {
+        "Hardware self-tests are",
+        "coming in a future update.",
+        "",
+        "Tests will cover: display,",
+        "buttons, LEDs, WiFi,",
+        "accelerometer, and buzzer.",
+    };
+    show_info_screen("H/W Self-Tests",
+                     lines, sizeof(lines) / sizeof(lines[0]));
+}
+
 /* ── Action: Update SD recovery (stub) ────────────────────────────── */
 
 static void action_sd_recovery(void)
@@ -473,16 +493,12 @@ void loader_menu_run(void)
             ESP_LOGI(TAG, "Selected item %d: %s",
                      selection + 1, item_label(selection));
             switch (selection) {
-            case 0:  action_ota_download();   break;
-            case 1:  action_sd_load();        break;
-            case 2:  action_bare_metal();     break;
-            case 3:
-                if (wifi_config_is_configured()) {
-                    action_reset_namebadge();
-                } else {
-                    action_sd_recovery();
-                }
-                break;
+            case 0:  action_ota_download();        break;
+            case 1:  action_sd_load();             break;
+            case 2:  action_reset_wifi_config();   break;
+            case 3:  action_reset_board_factory(); break;
+            case 4:  action_hw_self_tests();       break;
+            case 5:  action_bare_metal();          break;
             default: break;
             }
             display_fill(DISPLAY_COLOR_BLACK);
