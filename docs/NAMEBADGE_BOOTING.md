@@ -4,19 +4,19 @@
 
 This document describes the boot architecture, memory layout, OTA update
 strategy, and recovery procedures for the Namebadge board based on the
-**ESP32‑S3 with external PSRAM**.
+**ESP32-S3-Mini-1-N8**.
 
 Design goals:
 
--   Persistent loader that cannot be erased by student programs
--   Safe firmware updates via OTA
--   Simple classroom user interaction
--   Robust recovery mechanisms
--   Optional microSD-based full firmware restoration
+- Persistent loader that cannot be erased by student programs
+- Safe firmware updates via OTA
+- Simple classroom user interaction
+- Robust recovery mechanisms
+- Optional microSD-based full firmware restoration
 
 The badge normally boots **directly into the student application**.\
 The factory loader is entered by holding **A + B buttons during reset or
-power‑up** (held simultaneously for ~150 ms).
+power-up** (held for ~550 ms while the bootloader reads them).
 
 ------------------------------------------------------------------------
 
@@ -24,84 +24,107 @@ power‑up** (held simultaneously for ~150 ms).
 
 ### Stage 1 — ROM Bootloader
 
-Location: **Inside the ESP32‑S3 silicon**
+Location: **Inside the ESP32-S3 silicon**
 
 Responsibilities:
 
--   Runs immediately after reset
--   Initializes SPI flash interface
--   Loads the second‑stage bootloader from flash
+- Runs immediately after reset
+- Initializes SPI flash interface
+- Loads the second-stage bootloader from flash
 
 This code is permanent and **cannot be erased or modified**.
 
 ------------------------------------------------------------------------
 
-### Stage 2 — ESP‑IDF Second‑Stage Bootloader
+### Stage 2 — ESP-IDF Second-Stage Bootloader + factory_switch hook
 
 Location:
 
     Flash address: 0x1000
 
-Responsibilities:
+The second-stage bootloader is extended by the **`factory_switch`**
+component (`bootloader_components/factory_switch/factory_switch.c`),
+which runs via the `bootloader_after_init()` hook before any partition
+is loaded.
 
--   Reads the partition table
--   Determines which application partition to boot
--   Loads selected firmware into memory
+`factory_switch` responsibilities:
 
-The second‑stage bootloader is intentionally small and contains **no
-networking or UI logic**.
+- On **software reset**: leave otadata intact (the app set it before
+  restarting) and return immediately — no GPIO reads, no delay.
+- On **hardware reset** (power-on, RESET button, watchdog, …):
+  - Configure GPIO 34 (A) and GPIO 33 (B) as inputs with pull-ups.
+  - Wait **550 ms** for the on-board debounce capacitors (~10 µF)
+    to charge through the internal pull-ups.
+  - Read both pins.  If **both LOW** (A+B held): erase otadata so
+    the bootloader falls back to the factory partition.
+  - Otherwise: leave otadata intact so the bootloader boots the OTA
+    app directly.
+
+After `factory_switch` returns, the standard bootloader reads otadata
+and selects the boot partition normally.
 
 ------------------------------------------------------------------------
 
-### Stage 3 — Factory Loader Application
+### Stage 3 — Factory Loader Application (when entered)
 
 Location:
 
-    factory partition
+    factory partition (0x20000)
 
-This is the **BYUI‑Namebadge‑OTA** firmware.
+This is the **BYUI-Namebadge-OTA** firmware.  It runs only when:
+
+- A+B was held at reset (A+B escape), **or**
+- No valid OTA image exists (fresh badge or after "Reset to Blank Canvas")
 
 Responsibilities:
 
--   **Quick A+B detection** (~150 ms, before any display or network init)
--   Launch student applications (set OTA boot partition → restart)
--   Display the interactive loader menu
--   Configure WiFi via captive portal (QR code on phone)
--   Install firmware via OTA download
--   Execute bare‑metal / serial flash guidance
--   Stub placeholders for microSD app loading and SD recovery update
+- Display the interactive loader menu
+- Configure WiFi via captive portal (QR code on phone)
+- Install firmware via OTA download
+- Execute bare-metal / serial flash guidance
+- Stub placeholders for microSD app loading and SD recovery update
 
 ------------------------------------------------------------------------
 
 ## Boot Decision Logic
 
-    Power On
+    Power On / Hardware Reset
        |
     ROM Bootloader
        |
-    Second-Stage Bootloader  →  loads factory partition
+    Second-Stage Bootloader
        |
-    Factory Loader App  (BYUI-Namebadge-OTA)
+    factory_switch hook  (bootloader_after_init)
        |
-    buttons_init()  +  buttons_held(A+B, 150 ms)
+       |── Configure GPIO34(A) + GPIO33(B): input + pull-up
+       |── Wait 550 ms (debounce cap settle)
+       |── Read A and B
        |
-       |── A+B held ──────────────────────────> Factory Loader UI
-       |                                             |
-       |── A+B not held                         wifi config portal
-              |                                  (if not configured)
-              |                                      |
-              ├── valid OTA app found ──────>    Loader Menu
-              |   esp_ota_set_boot_partition()
-              |   esp_restart()
-              |   [ second-stage bootloader ]
-              |   [ loads OTA partition     ]
-              |   [ student app runs        ]
-              |
-              └── no valid OTA app ──────────> Factory Loader UI
-                                                (same path as A+B)
+       |── A+B both LOW (held) ──────> erase otadata
+       |                                    |
+       |── A+B not both held ──────> leave otadata intact
+       |
+    Bootloader reads otadata
+       |
+       |── otadata valid (OTA app installed) ──────> boot OTA app directly
+       |
+       └── otadata blank (no OTA app, or A+B erased it) ──> boot factory
+                                                                  |
+                                                             buttons_init()
+                                                             display_init()
+                                                             leds_init()
+                                                             splash_screen()
+                                                                  |
+                                                             wifi_config_is_configured()?
+                                                                  |
+                                                           NO ────┴──── YES
+                                                           |             |
+                                                       portal        loader menu
+                                                           \             /
+                                                            loader menu
 
-Startup latency before student app launch is **< 200 ms** when A+B are
-not held and a valid OTA image is installed.
+Startup latency on plain reset with a valid OTA app installed:
+**~550 ms** (bootloader cap-settle wait) + normal single boot time.
 
 ------------------------------------------------------------------------
 
@@ -142,10 +165,10 @@ and flash student firmware to the inactive OTA slot, then reboot.
 *Coming soon* — stub screen is shown with a brief explanation.
 
 **3. Configure WiFi**\
-Re‑run the captive portal to change SSID, password, nickname, or
+Re-run the captive portal to change SSID, password, nickname, or
 manifest URL.
 
-**4. Bare‑metal / Flash**\
+**4. Bare-metal / Flash**\
 Display `idf.py flash` / `esptool.py` instructions.  The user manually
 enters ROM download mode via IO0 + RESET.
 
@@ -156,17 +179,23 @@ enters ROM download mode via IO0 + RESET.
 
 ## Button Assignments
 
-| Button | GPIO | Loader Role                               |
-|--------|------|-------------------------------------------|
-| A      | 38   | Select / Confirm                          |
-| B      | 18   | A+B combo enters loader; B alone reserved |
-| Up     | 17   | Scroll menu up                            |
-| Down   | 16   | Scroll menu down                          |
-| Left   | 14   | Scroll up (alias for Up)                  |
-| Right  | 15   | Select (alias for A)                      |
-| BOOT   | 0    | ROM download mode (hold + RESET)          |
+| Button | GPIO | Loader Role                                  |
+|--------|------|----------------------------------------------|
+| A      | 34   | Select / Confirm; A+B combo = factory escape |
+| B      | 33   | A+B combo = factory escape; B alone reserved |
+| Up     | 11   | Scroll menu up                               |
+| Down   | TBD  | Scroll menu down                             |
+| Left   | 21   | Scroll up (alias for Up)                     |
+| Right  | TBD  | Select (alias for A)                         |
+| BOOT   | 0    | ROM download mode (hold + RESET)             |
 
-All buttons are **active LOW** with internal pull-ups.
+All buttons are **active LOW** with internal pull-ups and ~10 µF
+hardware debounce capacitors.
+
+> **Note:** GPIO 11 (Up) and GPIO 21 (Left) are LP I/O pads.  A
+> spin-wait on these pins can block forever after software reset.  The
+> button driver uses a time-based state machine (`esp_timer_get_time()`)
+> — no spin-waits anywhere.
 
 ------------------------------------------------------------------------
 
@@ -195,7 +224,7 @@ Current partition table (`partitions.csv`):
 
 | Partition  | Purpose                                               |
 |------------|-------------------------------------------------------|
-| NVS        | System WiFi and ESP‑IDF config                        |
+| NVS        | System WiFi and ESP-IDF config                        |
 | otadata    | Tracks active OTA slot                                |
 | phy_init   | RF calibration data                                   |
 | factory    | This loader application                               |
@@ -244,15 +273,16 @@ If power is lost during download:
 
 Device can still boot from the previous firmware.
 
-ESP‑IDF also supports **automatic rollback** if the new firmware crashes.
+ESP-IDF also supports **automatic rollback** if the new firmware crashes
+before calling `esp_ota_mark_app_valid_cancel_rollback()`.
 
 ------------------------------------------------------------------------
 
 ## Student App / Factory Loader Relationship
 
-Once a student app is installed the second-stage bootloader boots the
-OTA slot directly on subsequent power-ups.  To re-enter the factory
-loader the student app should call:
+Once a student app is installed, the bootloader boots the OTA slot
+directly on every plain reset.  To re-enter the factory loader the
+student app can call:
 
     const esp_partition_t *factory =
         esp_partition_find_first(ESP_PARTITION_TYPE_APP,
@@ -260,32 +290,24 @@ loader the student app should call:
     esp_ota_set_boot_partition(factory);
     esp_restart();
 
-Alternatively, the **"Reset to blank canvas"** workflow (erase otadata)
-always forces the factory loader on next boot.
+Alternatively, the user can hold **A+B at reset** — `factory_switch`
+erases otadata, causing the bootloader to fall back to factory.
 
 ------------------------------------------------------------------------
 
 ## PSRAM Usage
 
-The ESP32‑S3 module includes external PSRAM.
+The ESP32-S3 module includes embedded PSRAM.
 
-Important:
+> **Hardware note (rev 0.2 silicon):** The current boards use ESP32-S3
+> rev 0.2, which has a known errata where PSRAM initialisation fails
+> (`PSRAM ID read error: 0x00000000`).  PSRAM is physically present but
+> unavailable at runtime.  `CONFIG_SPIRAM_IGNORE_NOTFOUND=y` allows the
+> app to continue booting.  The factory loader and OTA manager operate
+> entirely from internal RAM.
 
-**PSRAM cannot store boot code.**\
-It becomes available only **after the bootloader runs**.
-
-PSRAM is used by the factory loader for:
-
--   OTA download buffers
--   JSON manifest parsing
--   Display framebuffers
--   Large FreeRTOS stacks
-
-Example framebuffer size:
-
-    320 × 240 × 2 bytes ≈ 150 KB
-
-PSRAM is ideal for this.
+PSRAM cannot store boot code; it becomes available only after the
+bootloader runs.
 
 ------------------------------------------------------------------------
 
@@ -293,14 +315,15 @@ PSRAM is ideal for this.
 
 Steps (menu item 1):
 
-1.  Connect to configured WiFi
-2.  Download application manifest from the URL stored in `user_data`
-3.  Select application
-4.  Download firmware
-5.  Write firmware to inactive OTA slot
-6.  Reboot into new firmware
+1. Connect to configured WiFi
+2. Download application manifest from the URL stored in `user_data`
+3. Select application
+4. Download firmware (streamed directly to flash in 8 KB chunks)
+5. SHA-256 verified inline; abort on mismatch
+6. Write firmware to inactive OTA slot
+7. Reboot into new firmware
 
-ESP‑IDF helper function:
+ESP-IDF helper function:
 
     esp_ota_get_next_update_partition(NULL);
 
@@ -317,7 +340,7 @@ Steps:
     erase otadata
     reboot
 
-After reboot the badge returns to the loader (no OTA app → loader UI
+After reboot the badge returns to the loader (no OTA app → factory UI
 is entered automatically even without A+B).
 
 ------------------------------------------------------------------------
@@ -341,9 +364,9 @@ Flash using:
 
 This restores:
 
--   bootloader
--   partition table
--   factory loader
+- bootloader
+- partition table
+- factory loader
 
 ------------------------------------------------------------------------
 
@@ -375,7 +398,7 @@ or
 
 ### Creating a Firmware Bundle
 
-Use ESP‑IDF and esptool:
+Use ESP-IDF and esptool:
 
     esptool.py merge_bin -o factory_bundle.bin \
         0x1000  bootloader.bin \
@@ -390,12 +413,12 @@ Optional OTA apps may also be included.
 
 User steps:
 
-1.  Insert recovery microSD card
-2.  Hold **A + B**
-3.  Press reset
-4.  Wait ~10 seconds
-5.  Badge automatically restores firmware
-6.  Device reboots
+1. Insert recovery microSD card
+2. Hold **A + B**
+3. Press reset
+4. Wait ~10 seconds
+5. Badge automatically restores firmware
+6. Device reboots
 
 ------------------------------------------------------------------------
 
@@ -415,18 +438,18 @@ This ensures the badge can **always be restored**.
 Normal use:
 
     Power on badge
-    Student program runs
+    Student program runs directly (~550 ms bootloader wait)
 
 Enter factory loader (from student app, or on a fresh badge):
 
     Hold A+B
     Press Reset
-    Release Reset
+    Release Reset (keep holding A+B for ~550 ms)
     Factory loader appears
 
 Install a new assignment:
 
-    Enter factory loader (A+B at power-on)
+    Enter factory loader (A+B at reset)
     Select "OTA App Download"
     Badge connects to WiFi, downloads, reboots into new app
 
@@ -449,16 +472,17 @@ Recover a badge (future):
 
 ## Component Map
 
-| Component       | Location          | Purpose                                              |
-|-----------------|-------------------|------------------------------------------------------|
-| `buttons`       | `buttons/`        | 6-button GPIO driver; debounce; boot-time check      |
-| `loader_menu`   | `loader_menu/`    | 5-item menu; dispatches OTA, portal, stubs           |
-| `portal_mode`   | `portal_mode/`    | SoftAP captive portal with QR code for WiFi setup    |
-| `ota_manager`   | `ota_manager/`    | Streaming OTA download and flash from manifest URL   |
-| `display`       | `display/`        | ILI9341 SPI driver, fonts, QR rendering              |
-| `leds`          | `leds/`           | WS2813B addressable LED chain (RMT DMA)              |
-| `splash_screen` | `splash_screen/`  | BYUI logo scroll-up animation                        |
-| `wifi_config`   | `wifi_config/`    | NVS: SSID, password, nickname, manifest URL          |
+| Component        | Location                                | Purpose                                               |
+|------------------|-----------------------------------------|-------------------------------------------------------|
+| `factory_switch` | `bootloader_components/factory_switch/` | Bootloader hook: A+B detect, otadata erase/preserve   |
+| `buttons`        | `buttons/`                              | 6-button GPIO driver; debounce state machine          |
+| `loader_menu`    | `loader_menu/`                          | 5-item menu; dispatches OTA, portal, stubs            |
+| `portal_mode`    | `portal_mode/`                          | SoftAP captive portal with QR code for WiFi setup     |
+| `ota_manager`    | `ota_manager/`                          | Streaming OTA download and flash from manifest URL    |
+| `display`        | `display/`                              | ILI9341 SPI driver, fonts, QR rendering               |
+| `leds`           | `leds/`                                 | WS2813B addressable LED chain (RMT DMA)               |
+| `splash_screen`  | `splash_screen/`                        | BYUI logo scroll-up animation                         |
+| `wifi_config`    | `wifi_config/`                          | NVS: SSID, password, nickname, manifest URL           |
 
 ------------------------------------------------------------------------
 
@@ -466,16 +490,19 @@ Recover a badge (future):
 
 Key design decisions:
 
--   Loader stored in **factory partition** — cannot be overwritten by OTA
--   Student apps stored in **OTA slots** (ota_0 / ota_1)
--   Device normally boots student program directly (~150 ms overhead)
--   **A+B held ~150 ms at boot → factory loader UI**
--   No A+B + no student app → factory loader UI automatically
--   WiFi config done once via QR-code captive portal; stored in `user_data`
--   OTA install downloads from manifest URL stored during config
--   PSRAM used for buffers and graphics
--   microSD loading/recovery stubbed; reserved for future update
--   ROM bootloader guarantees last‑resort flashing
+- Loader stored in **factory partition** — cannot be overwritten by OTA
+- Student apps stored in **OTA slots** (ota_0 / ota_1)
+- **`factory_switch` bootloader hook** handles all boot routing:
+  - Software reset → otadata intact → boot wherever app pointed
+  - Hardware reset, A+B NOT held → otadata intact → OTA app boots directly
+  - Hardware reset, A+B held → erase otadata → factory loader boots
+- **550 ms bootloader wait** on hardware reset (required for debounce cap settle)
+- No A+B + no student app → factory loader UI automatically
+- WiFi config done once via QR-code captive portal; stored in `user_data`
+- OTA install streams directly to flash (8 KB chunks); no PSRAM required
+- PSRAM unavailable on current rev 0.2 hardware (silicon errata)
+- microSD loading/recovery stubbed; reserved for future update
+- ROM bootloader guarantees last-resort flashing
 
-This architecture provides a **robust, classroom‑friendly firmware
+This architecture provides a **robust, classroom-friendly firmware
 system** for the Namebadge project.
