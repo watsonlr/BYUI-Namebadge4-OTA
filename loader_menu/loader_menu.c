@@ -54,8 +54,8 @@ static const char *ITEM_LABELS[NUM_ITEMS] = {
     "SDCard Apps",
     "Reset Wifi/Config",
     "Full Factory Reset",
-    "H/W Self-Tests",
-    "USB Program",
+    "ESP-IDF Program",
+    "Arduino Program",
 };
 
 static const char *item_label(int idx)
@@ -432,7 +432,7 @@ static void action_usb_program(void)
 
     /* Header */
     display_fill_rect(0, 0, DISPLAY_W, 30, COLOR_HEADER_BG);
-    const char *title = "USB Program";
+    const char *title = "ESP-IDF Program";
     int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
     display_draw_string((DISPLAY_W - tw) / 2, 7,
                         title, DISPLAY_COLOR_WHITE, COLOR_HEADER_BG, 2);
@@ -476,19 +476,22 @@ static void action_usb_program(void)
     wait_any_button();
 }
 
-/* ── Action: H/W Self-Tests (stub) ────────────────────────────────── */
+/* ── Action: Arduino Program ───────────────────────────────────────── */
 
-static void action_hw_self_tests(void)
+static void action_arduino_program(void)
 {
     const char *lines[] = {
-        "Hardware self-tests are",
-        "coming in a future update.",
+        "1. Install BYUI board package",
+        "   in Arduino IDE (one-time):",
+        "   github.com/watsonlr/",
+        "   namebadge-apps (arduino/)",
         "",
-        "Tests will cover: display,",
-        "buttons, LEDs, WiFi,",
-        "accelerometer, and buzzer.",
+        "2. Select: BYUI eBadge V4",
+        "   in Tools > Board",
+        "",
+        "3. Write sketch, click Upload.",
     };
-    show_info_screen("H/W Self-Tests",
+    show_info_screen("Arduino Program",
                      lines, sizeof(lines) / sizeof(lines[0]));
 }
 
@@ -536,8 +539,8 @@ void loader_menu_run(void)
             case 1:  action_sd_load();             break;
             case 2:  action_reset_wifi_config();   break;
             case 3:  action_reset_board_factory(); break;
-            case 4:  action_hw_self_tests();       break;
-            case 5:  action_usb_program();         break;
+            case 4:  action_usb_program();         break;
+            case 5:  action_arduino_program();     break;
             default: break;
             }
             display_fill(DISPLAY_COLOR_BLACK);
