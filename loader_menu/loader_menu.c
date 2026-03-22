@@ -29,6 +29,8 @@
 #define COLOR_YELLOW      DISPLAY_RGB565(255, 200,   0)
 #define COLOR_FOOTER_BG   DISPLAY_RGB565( 24,  24,  24)
 #define COLOR_DIM_WHITE   DISPLAY_RGB565(180, 180, 180)
+#define COLOR_GREEN_OK    DISPLAY_RGB565(  0, 200,  80)
+#define COLOR_WARN_BG     DISPLAY_RGB565( 80,   0,   0)
 
 /* ── Layout constants (320 × 240 landscape) ────────────────────────── */
 #define HEADER_Y      0
@@ -418,24 +420,60 @@ static void action_configure_wifi(void)
     portal_mode_run(0);
 }
 
-/* ── Action: Bare-metal / serial flash mode ────────────────────────── */
+/* ── Action: USB Program ───────────────────────────────────────────── *
+ * Shows flashing instructions with a clear warning to use the student
+ * template project and idf.py app-flash (not idf.py flash).
+ * Plain idf.py flash overwrites factory_switch + the partition table,
+ * which bricks the badge.                                             */
 
-static void action_bare_metal(void)
+static void action_usb_program(void)
 {
-    const char *lines[] = {
-        "To enter serial flash mode:",
-        "",
-        "  1. Hold IO0 (BOOT button)",
-        "  2. Press then release RESET",
-        "  3. Release IO0",
-        "",
-        "Then flash from your PC:",
-        "  idf.py -p <PORT> flash",
-        "  -- or --",
-        "  esptool.py write_flash ...",
-    };
-    show_info_screen("Bare-metal / Flash Mode",
-                     lines, sizeof(lines) / sizeof(lines[0]));
+    display_fill(DISPLAY_COLOR_BLACK);
+
+    /* Header */
+    display_fill_rect(0, 0, DISPLAY_W, 30, COLOR_HEADER_BG);
+    const char *title = "USB Program";
+    int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
+    display_draw_string((DISPLAY_W - tw) / 2, 7,
+                        title, DISPLAY_COLOR_WHITE, COLOR_HEADER_BG, 2);
+
+    /* Warning banner */
+    display_fill_rect(0, 31, DISPLAY_W, 18, COLOR_WARN_BG);
+    const char *warn = "! Use student template project !";
+    int ww = (int)strlen(warn) * DISPLAY_FONT_W;
+    display_draw_string((DISPLAY_W - ww) / 2, 35,
+                        warn, COLOR_YELLOW, COLOR_WARN_BG, 1);
+
+    /* NEVER / SAFE command lines */
+    display_draw_string( 8, 60, "NEVER:", DISPLAY_COLOR_RED,   DISPLAY_COLOR_BLACK, 1);
+    display_draw_string(57, 60, "idf.py flash",
+                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+
+    display_draw_string( 8, 78, "SAFE: ", COLOR_GREEN_OK,     DISPLAY_COLOR_BLACK, 1);
+    display_draw_string(57, 78, "idf.py app-flash -p PORT",
+                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+
+    /* Short explanation */
+    display_draw_string(8, 102,
+                        "'idf.py flash' overwrites the",
+                        COLOR_DIM_WHITE, DISPLAY_COLOR_BLACK, 1);
+    display_draw_string(8, 118,
+                        "loader -- this bricks the badge.",
+                        COLOR_DIM_WHITE, DISPLAY_COLOR_BLACK, 1);
+
+    /* Template URL */
+    display_draw_string(8, 142,
+                        "Student template project:",
+                        COLOR_DIM_WHITE, DISPLAY_COLOR_BLACK, 1);
+    display_draw_string(8, 158,
+                        "github.com/watsonlr/",
+                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+    display_draw_string(8, 174,
+                        "  namebadge-apps  (see README)",
+                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+
+    draw_footer("Press any button to return");
+    wait_any_button();
 }
 
 /* ── Action: H/W Self-Tests (stub) ────────────────────────────────── */
@@ -499,7 +537,7 @@ void loader_menu_run(void)
             case 2:  action_reset_wifi_config();   break;
             case 3:  action_reset_board_factory(); break;
             case 4:  action_hw_self_tests();       break;
-            case 5:  action_bare_metal();          break;
+            case 5:  action_usb_program();         break;
             default: break;
             }
             display_fill(DISPLAY_COLOR_BLACK);
