@@ -480,7 +480,18 @@ static void action_usb_program(void)
 
 static void action_arduino_program(void)
 {
-    const char *lines[] = {
+    display_fill(DISPLAY_COLOR_BLACK);
+    display_fill_rect(0, 0, DISPLAY_W, 30, COLOR_HEADER_BG);
+    {
+        const char *t = "Arduino Program";
+        int tw = (int)strlen(t) * DISPLAY_FONT_W * 2;
+        display_draw_string((DISPLAY_W - tw) / 2, 7,
+                            t, DISPLAY_COLOR_WHITE, COLOR_HEADER_BG, 2);
+    }
+
+    /* 9 lines at 16 px spacing — all fit between header (y=30) and
+     * footer (y=212) with room to spare.                            */
+    static const char *lines[] = {
         "1. Install BYUI board package",
         "   in Arduino IDE (one-time):",
         "   github.com/watsonlr/",
@@ -491,8 +502,13 @@ static void action_arduino_program(void)
         "",
         "3. Write sketch, click Upload.",
     };
-    show_info_screen("Arduino Program",
-                     lines, sizeof(lines) / sizeof(lines[0]));
+    for (int i = 0; i < 9; i++) {
+        display_draw_string(8, 36 + i * 16, lines[i],
+                            DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+    }
+
+    draw_footer("Press any button to return");
+    wait_any_button();
 }
 
 /* ── Action: Update SD recovery (stub) ────────────────────────────── */
