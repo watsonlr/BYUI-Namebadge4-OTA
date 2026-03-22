@@ -360,47 +360,60 @@ void factory_self_update_check(void)
         return;
     }
 
-    /* Parse manifest JSON */
+    /* Parse manifest JSON — expected format: array of version objects.
+     * Scan every entry, keep the one with:
+     *   hw_version == LOADER_HW_VERSION  AND  highest loader_version. */
     cJSON *root = cJSON_Parse(s_manifest_json);
-    if (!root) {
-        ESP_LOGW(TAG, "Manifest JSON parse error");
-        wifi_disconnect();
-        return;
-    }
-
-    int  mfst_hw      = cJSON_GetObjectItem(root, "hw_version")     ? cJSON_GetObjectItem(root, "hw_version")->valueint     : -1;
-    int  mfst_loader  = cJSON_GetObjectItem(root, "loader_version") ? cJSON_GetObjectItem(root, "loader_version")->valueint : -1;
-    const char *bin_url = cJSON_GetObjectItem(root, "binary_url") && cJSON_IsString(cJSON_GetObjectItem(root, "binary_url"))
-                            ? cJSON_GetObjectItem(root, "binary_url")->valuestring : NULL;
-    int  bin_size     = cJSON_GetObjectItem(root, "size")           ? cJSON_GetObjectItem(root, "size")->valueint           : 0;
-    const char *sha256  = cJSON_GetObjectItem(root, "sha256") && cJSON_IsString(cJSON_GetObjectItem(root, "sha256"))
-                            ? cJSON_GetObjectItem(root, "sha256")->valuestring : NULL;
-
-    ESP_LOGI(TAG, "Manifest: hw=%d loader=%d (current: hw=%d loader=%d)",
-             mfst_hw, mfst_loader, LOADER_HW_VERSION, LOADER_SW_VERSION);
-
-    bool update_needed = (mfst_hw == LOADER_HW_VERSION)
-                      && (mfst_loader > LOADER_SW_VERSION)
-                      && (bin_url != NULL)
-                      && (bin_size > 0)
-                      && (sha256 != NULL);
-
-    if (!update_needed) {
-        ESP_LOGI(TAG, "No loader update needed");
+    if (!root || !cJSON_IsArray(root)) {
+        ESP_LOGW(TAG, "Manifest JSON parse error or not an array");
         cJSON_Delete(root);
         wifi_disconnect();
         return;
     }
 
-    /* Copy strings out of cJSON before we do the download (cJSON_Delete later) */
+    int         best_version = -1;
     static char s_bin_url[257];
     static char s_sha256[65];
-    strlcpy(s_bin_url, bin_url, sizeof(s_bin_url));
-    strlcpy(s_sha256,  sha256,  sizeof(s_sha256));
+    int         best_size    = 0;
+
+    cJSON *entry;
+    cJSON_ArrayForEach(entry, root) {
+        cJSON *j_hw  = cJSON_GetObjectItem(entry, "hw_version");
+        cJSON *j_ldr = cJSON_GetObjectItem(entry, "loader_version");
+        cJSON *j_url = cJSON_GetObjectItem(entry, "binary_url");
+        cJSON *j_sz  = cJSON_GetObjectItem(entry, "size");
+        cJSON *j_sha = cJSON_GetObjectItem(entry, "sha256");
+
+        if (!j_hw || !j_ldr || !cJSON_IsString(j_url) || !j_sz || !cJSON_IsString(j_sha))
+            continue;
+        if (j_hw->valueint != LOADER_HW_VERSION)
+            continue;
+        if (j_ldr->valueint > best_version) {
+            best_version = j_ldr->valueint;
+            best_size    = j_sz->valueint;
+            strlcpy(s_bin_url, j_url->valuestring, sizeof(s_bin_url));
+            strlcpy(s_sha256,  j_sha->valuestring, sizeof(s_sha256));
+        }
+    }
     cJSON_Delete(root);
 
+    ESP_LOGI(TAG, "Best manifest entry for hw=%d: loader_version=%d (running=%d)",
+             LOADER_HW_VERSION, best_version, LOADER_SW_VERSION);
+
+    if (best_version <= LOADER_SW_VERSION) {
+        ESP_LOGI(TAG, "No loader update needed");
+        wifi_disconnect();
+        return;
+    }
+
+    if (best_size <= 0 || s_bin_url[0] == '\0' || s_sha256[0] == '\0') {
+        ESP_LOGW(TAG, "Best entry missing required fields — skipping");
+        wifi_disconnect();
+        return;
+    }
+
     ESP_LOGI(TAG, "Loader update available: v%d.%d → v%d.%d",
-             LOADER_HW_VERSION, LOADER_SW_VERSION, mfst_hw, mfst_loader);
+             LOADER_HW_VERSION, LOADER_SW_VERSION, LOADER_HW_VERSION, best_version);
 
     /* Find the inactive OTA partition for staging */
     const esp_partition_t *staging = esp_ota_get_next_update_partition(NULL);
@@ -414,7 +427,7 @@ void factory_self_update_check(void)
 
     /* Download and verify */
     show_msg("Updating loader...", "Do not power off");
-    bool dl_ok = download_to_staging(s_bin_url, bin_size, s_sha256, staging);
+    bool dl_ok = download_to_staging(s_bin_url, best_size, s_sha256, staging);
     wifi_disconnect();
 
     if (!dl_ok) {
@@ -431,7 +444,7 @@ void factory_self_update_check(void)
             (volatile factory_update_flag_t *)RTC_FLAG_ADDR;
     flag->magic_inv      = ~UPDATE_MAGIC;
     flag->staging_offset = staging->address;
-    flag->binary_size    = (uint32_t)bin_size;
+    flag->binary_size    = (uint32_t)best_size;
     flag->magic          = UPDATE_MAGIC;   /* arm the flag last */
 
     ESP_LOGI(TAG, "RTC flag set — restarting to apply update");
