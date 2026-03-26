@@ -269,15 +269,23 @@ static void disp_data(const uint8_t *data, int len)
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
 }
 
-/* Set address window, then send RAMWR command so pixels can follow. */
+/* Set address window, then send RAMWR command so pixels can follow.
+ * Panel is physically 240 cols × 320 rows.  In landscape mounting with MADCTL MX=1:
+ *   col axis  = vertical   (col 239=top, col 0=bottom)  → pc = (DISPLAY_H-1) - y
+ *   row axis  = horizontal (row 0=right, row 319=left)  → pr = (DISPLAY_W-1) - x
+ * Callers must send pixel data in REVERSED x order so pixel[0] lands at pr0. */
 static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t d[4];
+    uint16_t pc0 = (DISPLAY_H - 1) - y1;   /* physical col start */
+    uint16_t pc1 = (DISPLAY_H - 1) - y0;   /* physical col end   */
+    uint16_t pr0 = (DISPLAY_W - 1) - x1;   /* physical row start (x reversed) */
+    uint16_t pr1 = (DISPLAY_W - 1) - x0;   /* physical row end   (x reversed) */
     disp_cmd(0x2A);
-    d[0]=x0>>8; d[1]=x0&0xFF; d[2]=x1>>8; d[3]=x1&0xFF;
+    d[0]=pc0>>8; d[1]=pc0&0xFF; d[2]=pc1>>8; d[3]=pc1&0xFF;
     disp_data(d, 4);
     disp_cmd(0x2B);
-    d[0]=y0>>8; d[1]=y0&0xFF; d[2]=y1>>8; d[3]=y1&0xFF;
+    d[0]=pr0>>8; d[1]=pr0&0xFF; d[2]=pr1>>8; d[3]=pr1&0xFF;
     disp_data(d, 4);
     disp_cmd(0x2C);
 }
@@ -299,6 +307,19 @@ static inline void pack_pixel(uint8_t *dst, uint16_t color)
 {
     dst[0] = (uint8_t)(color >> 8);
     dst[1] = (uint8_t)(color & 0xFF);
+}
+
+/* Reverse npixels 2-byte pixels in buf in place.  Used to correct the
+ * left-right mirror caused by the row address mapping (pr = DISPLAY_W-1-x). */
+static void reverse_pixels(uint8_t *buf, int npixels)
+{
+    int lo = 0, hi = (npixels - 1) * 2;
+    while (lo < hi) {
+        uint8_t t0 = buf[lo], t1 = buf[lo + 1];
+        buf[lo] = buf[hi]; buf[lo + 1] = buf[hi + 1];
+        buf[hi] = t0;      buf[hi + 1] = t1;
+        lo += 2; hi -= 2;
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -327,7 +348,6 @@ static void ili9341_init_regs(void)
     disp_cmd(0xC1); disp_data((uint8_t[]){0x10}, 1);   /* power control 2 */
     disp_cmd(0xC5); disp_data((uint8_t[]){0x3E,0x28}, 2); /* VCOM */
     disp_cmd(0xC7); disp_data((uint8_t[]){0x86}, 1);
-    disp_cmd(0x36); disp_data((uint8_t[]){0x40}, 1);   /* MADCTL — landscape (MX) */  
     disp_cmd(0x3A); disp_data((uint8_t[]){0x55}, 1);   /* 16-bit colour */
     disp_cmd(0xB1); disp_data((uint8_t[]){0x00,0x18}, 2); /* frame rate ~70 Hz */
     disp_cmd(0xB6); disp_data((uint8_t[]){0x08,0x82,0x27}, 3);
@@ -340,6 +360,7 @@ static void ili9341_init_regs(void)
                                            0x31,0xC1,0x48,0x08,0x0F,0x0C,
                                            0x31,0x36,0x0F}, 15);
     disp_cmd(0x11); vTaskDelay(pdMS_TO_TICKS(120)); /* sleep out */
+    disp_cmd(0x36); disp_data((uint8_t[]){0x40}, 1);   /* MADCTL: MX=1 fixes horizontal; vertical fixed in software */
     disp_cmd(0x21);                                  /* inversion on — panel default is inverted */
     disp_cmd(0x29);                                  /* display on */
 }
@@ -458,6 +479,7 @@ void display_draw_char(int x, int y, char c, uint16_t fg, uint16_t bg, int scale
             if (screen_x1 >= DISPLAY_W) screen_x1 = DISPLAY_W - 1;
             set_window((uint16_t)x, (uint16_t)screen_y,
                        (uint16_t)screen_x1, (uint16_t)screen_y);
+            reverse_pixels(row_buf, row_bytes / 2);
             write_pixels(row_buf, row_bytes);
         }
     }
@@ -507,6 +529,7 @@ static void draw_char_font(int x, int y, char c,
             if (screen_x1 >= DISPLAY_W) screen_x1 = DISPLAY_W - 1;
             set_window((uint16_t)x, (uint16_t)screen_y,
                        (uint16_t)screen_x1, (uint16_t)screen_y);
+            reverse_pixels(row_buf, row_bytes / 2);
             write_pixels(row_buf, row_bytes);
         }
     }
@@ -543,17 +566,20 @@ void display_draw_bitmap(int x, int y, int w, int h, const uint16_t *pixels)
         for (int col = 0; col < w; col++) {
             pack_pixel(&row_buf[col * 2], src[col]);
         }
+        reverse_pixels(row_buf, w);
         write_pixels(row_buf, w * 2);
     }
 }
 
 void display_draw_row_raw(int x, int y, int w, const uint16_t *pixels)
 {
+    static uint16_t rev_buf[DISPLAY_W];
+    for (int i = 0; i < w; i++) rev_buf[i] = pixels[w - 1 - i];
     set_window((uint16_t)x, (uint16_t)y,
                (uint16_t)(x + w - 1), (uint16_t)y);
     spi_transaction_t t = {
         .length    = (size_t)w * 16,
-        .tx_buffer = pixels,
+        .tx_buffer = rev_buf,
         .user      = (void *)1,
     };
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
@@ -638,6 +664,8 @@ bool display_draw_qr(int cx, int cy, const char *text,
             row_buf[bi++] = bg_lo;
         }
 
+        /* Reverse pixels so the row-address mirror is corrected. */
+        if (nbytes > 0) reverse_pixels(row_buf + skip, nbytes / 2);
         /* Repeat this row module_px scanlines vertically */
         for (int py = 0; py < module_px; py++) {
             SEND_ROW(data_y0 + row * module_px + py);
