@@ -45,7 +45,8 @@
 #define ITEM_ARROW_X     8
 #define ITEM_TEXT_X     32
 
-#define NUM_ITEMS     6
+#define NUM_ITEMS     7
+#define VISIBLE_ITEMS 6          /* item rows visible at once           */
 #define VISIBLE_APPS  4          /* max app rows visible at once        */
 
 /* ── Main menu labels ──────────────────────────────────────────────── */
@@ -54,8 +55,9 @@ static const char *ITEM_LABELS[NUM_ITEMS] = {
     "SDCard Apps",
     "Reset Wifi/Config",
     "Full Factory Reset",
-    "ESP-IDF Program",
     "Arduino Program",
+    "Load MicroPython",
+    "ESP-IDF Program",
 };
 
 static const char *item_label(int idx)
@@ -90,9 +92,9 @@ static void draw_footer(const char *hint)
                         DISPLAY_COLOR_WHITE, COLOR_FOOTER_BG, 1);
 }
 
-static void draw_item(int idx, bool selected)
+static void draw_item(int row, int idx, bool selected)
 {
-    int y = item_y(idx);
+    int y = item_y(row);
 
     uint16_t bg = selected ? DISPLAY_COLOR_RED : DISPLAY_COLOR_WHITE;
     uint16_t fg = selected ? DISPLAY_COLOR_WHITE : COLOR_DARK;
@@ -112,21 +114,37 @@ static void draw_item(int idx, bool selected)
     display_draw_string(ITEM_TEXT_X, y + 7, buf, fg, bg, ITEM_TEXT_SCALE);
 }
 
-static void draw_menu(int selected)
+static void draw_menu(int selected, int scroll)
 {
     char title[32];
     snprintf(title, sizeof(title), "BYU-I Loader (v%d.%d)", HW_VERSION, LOADER_VERSION);
     draw_header_titled(title);
     /* Fill the 2px gap between header and first item (y=30-31). */
     display_fill_rect(0, HEADER_H, DISPLAY_W, ITEMS_START - HEADER_H, DISPLAY_COLOR_BLACK);
-    for (int i = 0; i < NUM_ITEMS; i++) {
-        draw_item(i, i == selected);
+    for (int row = 0; row < VISIBLE_ITEMS; row++) {
+        int idx = scroll + row;
+        if (idx < NUM_ITEMS)
+            draw_item(row, idx, idx == selected);
+        else
+            display_fill_rect(0, item_y(row), DISPLAY_W, ITEM_H, DISPLAY_COLOR_BLACK);
     }
-    /* Fill any gap between last item and footer (appears when NUM_ITEMS < 5). */
-    int gap_top = ITEMS_START + NUM_ITEMS * ITEM_H;
+    /* Fill any gap between last item and footer. */
+    int gap_top = ITEMS_START + VISIBLE_ITEMS * ITEM_H;
     if (gap_top < FOOTER_Y)
         display_fill_rect(0, gap_top, DISPLAY_W, FOOTER_Y - gap_top, DISPLAY_COLOR_BLACK);
-    draw_footer("Up/Dn:move  Right/A:select");
+
+    bool more_above = scroll > 0;
+    bool more_below = scroll + VISIBLE_ITEMS < NUM_ITEMS;
+    char hint[48];
+    if (more_above && more_below)
+        snprintf(hint, sizeof(hint), "^ Up/Dn:move  A:select  v");
+    else if (more_above)
+        snprintf(hint, sizeof(hint), "^ Up/Dn:move  A:select");
+    else if (more_below)
+        snprintf(hint, sizeof(hint), "Up/Dn:move  A:select  v");
+    else
+        snprintf(hint, sizeof(hint), "Up/Dn:move  Right/A:select");
+    draw_footer(hint);
 }
 
 /* ── Info / stub screens ───────────────────────────────────────────── */
@@ -527,24 +545,50 @@ static void action_sd_recovery(void)
                      lines, sizeof(lines) / sizeof(lines[0]));
 }
 
+/* ── Action: Load MicroPython (stub) ───────────────────────────────── */
+
+static void action_load_micropython(void)
+{
+    const char *lines[] = {
+        "MicroPython loading is",
+        "coming in a future update.",
+        "",
+        "To install apps now, use",
+        "option 1 (OTA Download).",
+    };
+    show_info_screen("Load MicroPython",
+                     lines, sizeof(lines) / sizeof(lines[0]));
+}
+
 /* ── Public entry point ────────────────────────────────────────────── */
 
 void loader_menu_run(void)
 {
     int selection = 0;
-    draw_menu(selection);
+    int scroll    = 0;
+    draw_menu(selection, scroll);
     ESP_LOGI(TAG, "loader_menu_run: entering menu loop");
     for (;;) {
         button_t btn = buttons_wait_event(0);
         ESP_LOGI(TAG, "loader_menu_run: got button event 0x%02X", btn);
         if (btn & (BTN_UP | BTN_LEFT)) {
             selection = (selection - 1 + NUM_ITEMS) % NUM_ITEMS;
-            draw_menu(selection);
+            /* Wrap-around: jumping from top to bottom — snap scroll to show it. */
+            if (selection == NUM_ITEMS - 1)
+                scroll = NUM_ITEMS - VISIBLE_ITEMS;
+            else if (selection < scroll)
+                scroll = selection;
+            draw_menu(selection, scroll);
             continue;
         }
         if (btn & (BTN_DOWN | BTN_B)) {
             selection = (selection + 1) % NUM_ITEMS;
-            draw_menu(selection);
+            /* Wrap-around: jumping from bottom to top — snap scroll to 0. */
+            if (selection == 0)
+                scroll = 0;
+            else if (selection >= scroll + VISIBLE_ITEMS)
+                scroll = selection - VISIBLE_ITEMS + 1;
+            draw_menu(selection, scroll);
             continue;
         }
         if (btn & (BTN_RIGHT | BTN_A)) {
@@ -555,12 +599,13 @@ void loader_menu_run(void)
             case 1:  action_sd_load();             break;
             case 2:  action_reset_wifi_config();   break;
             case 3:  action_reset_board_factory(); break;
-            case 4:  action_usb_program();         break;
-            case 5:  action_arduino_program();     break;
+            case 4:  action_arduino_program();     break;
+            case 5:  action_load_micropython();    break;
+            case 6:  action_usb_program();         break;
             default: break;
             }
             display_fill(DISPLAY_COLOR_BLACK);
-            draw_menu(selection);
+            draw_menu(selection, scroll);
         }
     }
 }

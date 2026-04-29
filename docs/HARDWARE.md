@@ -14,47 +14,45 @@
 
 > **Note**: GPIO26 is reserved for the octal PSRAM interface — do not use it.
 
-
-## BYUI eBadge V4.0 — Full Pinout
+## BYUI eBadge V3.0 — Full Pinout
 
 | GPIO | Primary Function | Notes |
 |------|-----------------|-------|
-| 0 | Display CS (SPI2) | |
-| 1 | Display Reset | |
-| 2 | RGB Red LED | |
-| 3 | Display MOSI (SPI2) | |
-| 4 | RGB Green LED | |
-| 5 | RGB Blue LED | |
-| 6 | Single Color LED | |
-| 7 | Addressable LEDs (WS2813B) | |
-| 8 | Joystick X | |
-| 9 | Joystick Y | |
-| 10 | Button Right | |
-| 11 | Button Up | |
-| 12 | Battery Voltage Indicator | |
-| 13 | Minibadge A CLK | Expansion slot |
-| 14 | Minibadge A IO2 | Expansion slot |
-| 15 | Minibadge A IO3 | Expansion slot |
-| 16 | Minibadge B CLK | Expansion slot |
-| 17 | Minibadge B IO2 | Expansion slot |
-| 18 | Minibadge B IO3 | Expansion slot |
-| 21 | Button Left | |
-| 33 | Button B | |
-| 34 | Button A | |
-| 35 | UART1 TX (exposed) | |
-| 36 | UART1 RX (exposed) | |
-| 37 | SD Card MISO (SPI3) / Exposed SPI MISO | |
-| 38 | SD Card CLK (SPI3) / Exposed SPI CLK | |
-| 39 | SD Card MOSI (SPI3) / Exposed SPI MOSI | |
-| 40 | SD Card CS (SPI3) | |
-| 41 | I2C SDA | |
-| 42 | I2C SCL | |
-| 43 | UART0 TX (USB bridge) | |
-| 44 | UART0 RX (USB bridge) | |
-| 45 | Display D/C (SPI2) | |
-| 46 | Display CLK (SPI2) | |
-| 47 | Button Down | |
-| 48 | Buzzer | |
+| IO0 | Boot / Strapping | Hold LOW for download mode |
+| IO1 | Joystick X-axis | ADC1_CH0 |
+| IO2 | Joystick Y-axis | ADC1_CH1 |
+| IO3 | SD Card CS | ADC1_CH2; strapping pin |
+| IO4 | RGB Blue LED | PWM output |
+| IO5 | RGB Green LED | PWM output |
+| IO6 | RGB Red LED | PWM output |
+| IO7 | Addressable LEDs (WS2813B) | RMT data line |
+| IO8 | Minibadge CLK | Extension connector |
+| IO9 | Display CS | SPI chip select |
+| IO10 | SPI2 MISO | Shared: display + SD |
+| IO11 | SPI2 MOSI | Shared: display + SD |
+| IO12 | SPI2 CLK | Shared: display + SD |
+| IO13 | Display DC | Data / Command select |
+| IO14 | Button Left | Active LOW, pull-up |
+| IO15 | Button Right | Active LOW, pull-up |
+| IO16 | Button Down | Active LOW, pull-up |
+| IO17 | Button Up | Active LOW, pull-up |
+| IO18 | Button B | Active LOW, pull-up |
+| IO19 | USB D- | Native USB |
+| IO20 | USB D+ | Native USB |
+| IO21 | I2C SCL | Accelerometer clock |
+| IO26 | **PSRAM** | **Reserved on N4R2 — do not use** |
+| IO33–37 | **SPI Flash** | **Internal — do not use** |
+| IO38 | Button A | Active LOW, pull-up |
+| IO39 | JTAG MTCK | Debug (exposed pad) |
+| IO40 | JTAG MTDO | Debug (exposed pad) |
+| IO41 | JTAG MTDI / C LED | Debug / indicator |
+| IO42 | JTAG MTMS / Buzzer | Piezo PWM |
+| IO43 | UART0 TX | Console output |
+| IO44 | UART0 RX | Console input |
+| IO45 | Strapping | Boot config |
+| IO46 | Strapping | Boot config |
+| IO47 | I2C SDA | Accelerometer data |
+| IO48 | Display RST | Display reset |
 
 ### Strapping / Reserved Pins
 
@@ -71,17 +69,16 @@
 
 ## Peripheral Reference
 
-
-### Display — ILI9341 TFT LCD (SPI2, write-only)
+### Display — ILI9341 TFT LCD
 
 | Signal | GPIO |
 |--------|------|
-| CS | 0 |
-| DC (Data/Cmd) | 45 |
-| RST | 1 |
-| CLK (SPI2) | 46 |
-| MOSI (SPI2) | 3 |
-
+| CS | 9 |
+| DC (Data/Cmd) | 13 |
+| RST | 48 |
+| CLK (SPI2) | 12 |
+| MOSI (SPI2) | 11 |
+| MISO (SPI2) | 10 |
 
 - Resolution: 240 × 320 pixels (native portrait), mounted landscape with FPC connector on the left
 - Orientation: MADCTL register `0x36` = `0x40` (MX bit only) — produces correct landscape orientation with the physical FPC-left mounting
@@ -90,56 +87,36 @@
 - SPI clock: up to 40 MHz, Mode 0 (CPOL=0, CPHA=0), MSB first
 - **SPI2 bus is shared with SD card; manage CS lines carefully**
 
-
-### SD Card — TF Push (SPI3, separate bus)
-
-| Signal | GPIO |
-|--------|------|
-| CS | 40 |
-| CLK (SPI3) | 38 |
-| MOSI (SPI3) | 39 |
-| MISO (SPI3) | 37 |
-
-### Exposed SPI (shared with SD Card, SPI3)
+### SD Card — TF Push (SPI, shared bus)
 
 | Signal | GPIO |
 |--------|------|
-| MISO | 37 |
-| MOSI | 39 |
-| CLK | 38 |
-
-
+| CS | 3 |
+| CLK (SPI2) | 12 |
+| MOSI (SPI2) | 11 |
+| MISO (SPI2) | 10 |
 
 ### Buttons
 
 | Button | GPIO | Logic |
 |--------|------|-------|
-| Up | 11 | Active LOW (internal pull-up) |
-| Down | 47 | Active LOW |
-| Left | 21 | Active LOW |
-| Right | 10 | Active LOW |
-| A | 34 | Active LOW |
-| B | 33 | Active LOW |
-
-
+| Up | 17 | Active LOW (internal pull-up) |
+| Down | 16 | Active LOW |
+| Left | 14 | Active LOW |
+| Right | 15 | Active LOW |
+| A | 38 | Active LOW |
+| B | 18 | Active LOW |
+| Boot / Reset | 0 | Active LOW (strapping) |
 
 ### RGB LED (RS-3535MWAM)
 
 | Channel | GPIO |
 |---------|------|
-| Red | 2 |
-| Green | 4 |
-| Blue | 5 |
-
-### Single Color LED
-
-| Signal | GPIO |
-|--------|------|
-| LED | 6 |
-
+| Red | 6 |
+| Green | 5 |
+| Blue | 4 |
 
 > Check your board schematic for common-anode vs common-cathode wiring.
-
 
 ### Addressable LEDs — WS2813B-2121
 
@@ -147,92 +124,51 @@
 |--------|------|
 | Data | 7 |
 
-
 Use the ESP-IDF `led_strip` component (RMT-based). Compatible with WS2812/NeoPixel libraries.
-
 
 ### Buzzer — MLT-5020 Piezo
 
 | Signal | GPIO |
 |--------|------|
-| Drive | 48 |
-
+| Drive | 42 |
 
 Drive with a LEDC PWM channel or GPIO toggle for simple tones. [Datasheet](https://lcsc.com/datasheet/lcsc_datasheet_2410121451_Jiangsu-Huaneng-Elec-MLT-5020_C94598.pdf)
-
 
 ### Accelerometer — MMA8452Q
 
 | Signal | GPIO |
 |--------|------|
-| SDA | 41 |
-| SCL | 42 |
+| SDA | 47 |
+| SCL | 21 |
 
-- I2C address: 0x1C
+- I2C address: 0x1C or 0x1D (SA0 pin selectable)
 - [Datasheet](https://lcsc.com/datasheet/lcsc_datasheet_2405281404_NXP-Semicon-MMA8452QR1_C11360.pdf)
-
 
 ### Joystick — Adafruit 2765
 
-| Axis / Signal | GPIO |
-|---------------|------|
-| X-axis | 8 |
-| Y-axis | 9 |
+| Axis / Signal | GPIO | Note |
+|---------------|------|------|
+| X-axis | 1 | ADC1_CH0 (analog) |
+| Y-axis | 2 | ADC1_CH1 (analog) |
 
-
-
-### UART0 (USB bridge, CP2102N)
+### USB-Serial Bridge — CP2102N-A02-GQFN28R
 
 | Signal | GPIO |
 |--------|------|
 | TX | 43 |
 | RX | 44 |
 
-### UART1 (Exposed UART)
-
-| Signal | GPIO |
-|--------|------|
-| TX | 35 |
-| RX | 36 |
-
-
+Baud: 115200, 8N1. [Datasheet](https://lcsc.com/datasheet/lcsc_datasheet_2304140030_SKYWORKS-SILICON-LABS-CP2102N-A02-GQFN28R_C964632.pdf)
 
 ### Charging — TP4056
+
 Single-cell Li-ion/LiPo charger (4.2 V max). Charge current set by RPROG resistor. [Datasheet](https://www.lcsc.com/datasheet/lcsc_datasheet_1809261820_TOPPOWER-Nanjing-Extension-Microelectronics-TP4056-42-ESOP8_C16581.pdf)
-
-### Battery Voltage Indicator
-
-| Signal | GPIO |
-|--------|------|
-| Battery Voltage | 12 |
-
-
 
 ### Wi-Fi
 
 - SoftAP SSID (provisioning): `BYUI_NameBadge`
 - Channel: 6 (2.4 GHz only)
 - Provisioning: open; client: WPA2-PSK
-
-
-### Minibadge A (expansion slot)
-
-| Signal | GPIO |
-|--------|------|
-| CLK | 13 |
-| IO2 | 14 |
-| IO3 | 15 |
-| I2C | 41/42 |
-
-### Minibadge B (expansion slot)
-
-| Signal | GPIO |
-|--------|------|
-| CLK | 16 |
-| IO2 | 17 |
-| IO3 | 18 |
-| I2C | 41/42 |
-
 
 ---
 

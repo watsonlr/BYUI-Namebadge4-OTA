@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/lynn/Documents/Repositories/namebadge_micropython/**)",
+      "PowerShell(wsl -e bash -c \"ls /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/\" 2>&1)",
+      "PowerShell(wsl -e bash -c \"grep -n 'MICROPY_PY_BLUETOOTH\\\\|MICROPY_PY_USB\\\\|mpnimbleport\\\\|machine_usb_device\\\\|modbluetooth_nimble' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/ports/esp32/esp32_common.cmake 2>/dev/null | head -30\")",
+      "PowerShell(wsl -e bash -c \"grep -n 'MICROPY_PY_BLUETOOTH\\\\|MICROPY_PY_USB\\\\|mpnimbleport\\\\|machine_usb_device\\\\|modbluetooth_nimble\\\\|BT\\\\|USB\\\\|nimble' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/ports/esp32/esp32_common.cmake | head -50\")",
+      "PowerShell(wsl -e bash -c \"sed -n '120,160p' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/ports/esp32/esp32_common.cmake\")",
+      "PowerShell(wsl -e bash -c \"grep -n 'MICROPY_PY_BLUETOOTH\\\\|modbluetooth_nimble\\\\|machine_usb_device\\\\|MICROPY_PY_USB' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/extmod/extmod.cmake | head -30\")",
+      "PowerShell(wsl -e bash -c \"sed -n '1,80p' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/extmod/extmod.cmake\")",
+      "PowerShell(wsl -e bash -c \"grep -n 'idf_component_register\\\\|MICROPY_SOURCE_QSTR\\\\|MICROPY_SOURCE_PORT\\\\|MICROPY_SOURCE_EXTMOD' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/ports/esp32/esp32_common.cmake | head -30\")",
+      "PowerShell(wsl -e bash -c \"sed -n '205,250p' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/ports/esp32/esp32_common.cmake\")",
+      "PowerShell(wsl -e bash -c \"grep -n 'QSTR\\\\|qstr\\\\|make_qstr\\\\|GEN_QSTR' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/ports/esp32/esp32_common.cmake | head -20\")",
+      "PowerShell(wsl -e bash -c \"grep -rn 'MICROPY_SOURCE_QSTR\\\\|make_qstr\\\\|qstr_i\\\\|GEN_QSTR' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/py/mkrules.cmake 2>/dev/null | head -20\")",
+      "PowerShell(wsl -e bash -c \"sed -n '65,75p' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/extmod/extmod.cmake\")",
+      "PowerShell(wsl -e bash -c \"head -20 /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/extmod/machine_usb_device.c\")",
+      "PowerShell(wsl -e bash -c \"sed -n '20,40p' /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/extmod/machine_usb_device.c\")",
+      "PowerShell(wsl -e bash -c \"head -40 /mnt/c/Users/lynn/Documents/Repositories/namebadge_micropython/micropython/extmod/nimble/modbluetooth_nimble.c | grep -E '^#|include'\")"
+    ]
+  }
+}
