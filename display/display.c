@@ -270,16 +270,20 @@ static void disp_data(const uint8_t *data, int len)
 }
 
 /* Set address window, then send RAMWR command so pixels can follow.
- * With MADCTL MV=1 (row/col exchange): CASET addresses panel rows (x, 0..319),
- * RASET addresses panel cols (y, 0..239).  Direct mapping — no inversions needed. */
+ * MADCTL=0xA0 (MY=1, MX=0, MV=1): row/col exchanged, row scan reversed.
+ * CASET (cols 0..239) drives the y-axis, forward with MX=0.
+ * RASET (rows 0..319) drives the x-axis, reversed with MY=1: pr = 319-x.
+ * Result: pixel data sent left-to-right, top-to-bottom — no reversal needed. */
 static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t d[4];
-    disp_cmd(0x2A);
+    disp_cmd(0x2A);   /* CASET — y direct (MX=0 forward) */
     d[0]=y0>>8; d[1]=y0&0xFF; d[2]=y1>>8; d[3]=y1&0xFF;
     disp_data(d, 4);
+    uint16_t pr0 = (DISPLAY_W - 1) - x1;   /* RASET — x reversed (MY=1) */
+    uint16_t pr1 = (DISPLAY_W - 1) - x0;
     disp_cmd(0x2B);
-    d[0]=x0>>8; d[1]=x0&0xFF; d[2]=x1>>8; d[3]=x1&0xFF;
+    d[0]=pr0>>8; d[1]=pr0&0xFF; d[2]=pr1>>8; d[3]=pr1&0xFF;
     disp_data(d, 4);
     disp_cmd(0x2C);
 }
@@ -333,7 +337,7 @@ static void ili9341_init_regs(void)
                                            0x31,0xC1,0x48,0x08,0x0F,0x0C,
                                            0x31,0x36,0x0F}, 15);
     disp_cmd(0x11); vTaskDelay(pdMS_TO_TICKS(120)); /* sleep out */
-    disp_cmd(0x36); disp_data((uint8_t[]){0xE0}, 1);   /* MADCTL: MY=1, MX=1, MV=1 — landscape */
+    disp_cmd(0x36); disp_data((uint8_t[]){0xA0}, 1);   /* MADCTL: MY=1, MX=0, MV=1 — landscape, x reversed */
     disp_cmd(0x21);                                  /* inversion on — panel default is inverted */
     disp_cmd(0x29);                                  /* display on */
 }
@@ -557,14 +561,10 @@ void display_draw_bitmap(int x, int y, int w, int h, const uint16_t *pixels)
 
 void display_draw_row_raw(int x, int y, int w, const uint16_t *pixels)
 {
-    set_window((uint16_t)x, (uint16_t)y,
-               (uint16_t)(x + w - 1), (uint16_t)y);
-    spi_transaction_t t = {
-        .length    = (size_t)w * 16,
-        .tx_buffer = pixels,
-        .user      = (void *)1,
-    };
-    ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
+    static uint8_t row_buf[DISPLAY_W * 2];
+    for (int i = 0; i < w; i++) pack_pixel(&row_buf[i * 2], pixels[i]);
+    set_window((uint16_t)x, (uint16_t)y, (uint16_t)(x + w - 1), (uint16_t)y);
+    write_pixels(row_buf, w * 2);
 }
 
 bool display_draw_qr(int cx, int cy, const char *text,
