@@ -1,16 +1,16 @@
 #!/bin/bash
 # publish_bootloader.sh
-# Builds the factory loader, copies the binary to namebadge-apps, updates the
-# manifest JSON, and pushes everything to GitHub so the OTA update URL goes live.
+# Builds the factory loader, copies all flash binaries to the org Pages repo,
+# updates loader_manifest.json in the new multi-binary format, and pushes.
 
 set -e
 
 LOADER_REPO="$(cd "$(dirname "$0")/.." && pwd)"
-APPS_REPO="/home/lynn/Documents/Repositories/namebadge-apps"
-BOOTLOADER_DIR="${APPS_REPO}/bootloader_downloads"
+PAGES_REPO="${HOME}/Documents/Repositories/byu-i-ebadge.github.io"
+BOOTLOADER_DIR="${PAGES_REPO}/bootloader_downloads"
 MANIFEST="${BOOTLOADER_DIR}/loader_manifest.json"
 HW_VERSION=4
-GITHUB_PAGES_BASE="https://watsonlr.github.io/namebadge-apps/bootloader_downloads"
+GITHUB_PAGES_BASE="https://byu-i-ebadge.github.io/bootloader_downloads"
 
 # ── Step 1: Prompt for loader version number ──────────────────────────────────
 echo ""
@@ -26,11 +26,13 @@ if ! [[ "$LOADER_VERSION" =~ ^[0-9]+$ ]]; then
 fi
 
 FULL_VERSION="${HW_VERSION}.${LOADER_VERSION}"
-BIN_NAME="badge_bootloader_v${FULL_VERSION}.bin"
+APP_BIN_NAME="badge_bootloader_v${FULL_VERSION}.bin"
+BL_BIN_NAME="badge_bootloader_v${FULL_VERSION}_bl.bin"
+PT_BIN_NAME="badge_bootloader_v${FULL_VERSION}_pt.bin"
 SHA_NAME="badge_bootloader_v${FULL_VERSION}.sha256"
 
 echo ""
-echo "Publishing loader v${FULL_VERSION}  →  ${BIN_NAME}"
+echo "Publishing loader v${FULL_VERSION}"
 echo ""
 
 # ── Step 2: Update LOADER_SW_VERSION in source headers ───────────────────────
@@ -53,29 +55,39 @@ source /home/lynn/esp/esp-idf/export.sh > /dev/null 2>&1
 cd "$LOADER_REPO"
 idf.py build 2>&1 | tail -5
 
-BUILD_BIN="${LOADER_REPO}/build/ebadge_app.bin"
-if [ ! -f "$BUILD_BIN" ]; then
-    echo "Error: build output not found at ${BUILD_BIN}"
-    exit 1
-fi
+BUILD_APP="${LOADER_REPO}/build/ebadge_app.bin"
+BUILD_BL="${LOADER_REPO}/build/bootloader/bootloader.bin"
+BUILD_PT="${LOADER_REPO}/build/partition_table/partition-table.bin"
+
+for f in "$BUILD_APP" "$BUILD_BL" "$BUILD_PT"; do
+    if [ ! -f "$f" ]; then
+        echo "Error: build output not found at ${f}"
+        exit 1
+    fi
+done
 echo "    Build OK"
 
-# ── Step 4: Copy binary ───────────────────────────────────────────────────────
+# ── Step 4: Copy binaries ─────────────────────────────────────────────────────
 echo ""
-echo "[ 3/6 ] Copying binary to ${BOOTLOADER_DIR}..."
+echo "[ 3/6 ] Copying binaries to ${BOOTLOADER_DIR}..."
 
 mkdir -p "$BOOTLOADER_DIR"
-cp "$BUILD_BIN" "${BOOTLOADER_DIR}/${BIN_NAME}"
-echo "    Copied → ${BIN_NAME}"
+cp "$BUILD_APP" "${BOOTLOADER_DIR}/${APP_BIN_NAME}"
+cp "$BUILD_BL"  "${BOOTLOADER_DIR}/${BL_BIN_NAME}"
+cp "$BUILD_PT"  "${BOOTLOADER_DIR}/${PT_BIN_NAME}"
 
-# ── Step 5: Compute SHA-256 ───────────────────────────────────────────────────
+echo "    Copied → ${APP_BIN_NAME}  (factory app,     0x20000)"
+echo "    Copied → ${BL_BIN_NAME}   (ESP-IDF bootloader, 0x1000)"
+echo "    Copied → ${PT_BIN_NAME}   (partition table,    0x8000)"
+
+# ── Step 5: Compute SHA-256 for factory app ───────────────────────────────────
 echo ""
 echo "[ 4/6 ] Computing SHA-256..."
 
-SHA256=$(sha256sum "${BOOTLOADER_DIR}/${BIN_NAME}" | awk '{print $1}')
-BIN_SIZE=$(stat -c%s "${BOOTLOADER_DIR}/${BIN_NAME}")
+SHA256=$(sha256sum "${BOOTLOADER_DIR}/${APP_BIN_NAME}" | awk '{print $1}')
+APP_SIZE=$(stat -c%s "${BOOTLOADER_DIR}/${APP_BIN_NAME}")
 
-echo "$SHA256  ${BIN_NAME}" > "${BOOTLOADER_DIR}/${SHA_NAME}"
+echo "$SHA256  ${APP_BIN_NAME}" > "${BOOTLOADER_DIR}/${SHA_NAME}"
 echo "    ${SHA256}"
 echo "    Saved → ${SHA_NAME}"
 
@@ -83,16 +95,17 @@ echo "    Saved → ${SHA_NAME}"
 echo ""
 echo "[ 5/6 ] Updating loader_manifest.json..."
 
-BINARY_URL="${GITHUB_PAGES_BASE}/${BIN_NAME}"
+APP_URL="${GITHUB_PAGES_BASE}/${APP_BIN_NAME}"
+BL_URL="${GITHUB_PAGES_BASE}/${BL_BIN_NAME}"
+PT_URL="${GITHUB_PAGES_BASE}/${PT_BIN_NAME}"
 
 python3 - <<EOF
-import json, sys
+import json
 
 manifest_path = "${MANIFEST}"
 try:
     with open(manifest_path) as f:
         data = json.load(f)
-    # Handle legacy single-object format
     if isinstance(data, dict):
         data = [data]
     if not isinstance(data, list):
@@ -103,12 +116,15 @@ except (FileNotFoundError, json.JSONDecodeError):
 new_entry = {
     "hw_version":     ${HW_VERSION},
     "loader_version": ${LOADER_VERSION},
-    "binary_url":     "${BINARY_URL}",
-    "size":           ${BIN_SIZE},
-    "sha256":         "${SHA256}"
+    "binaries": [
+        {"url": "${BL_URL}",  "address": 0x1000},
+        {"url": "${PT_URL}",  "address": 0x8000},
+        {"url": "${APP_URL}", "address": 0x20000},
+    ],
+    "size":   ${APP_SIZE},
+    "sha256": "${SHA256}",
 }
 
-# Replace any existing entry for the same hw+loader version, else append
 replaced = False
 for i, entry in enumerate(data):
     if entry.get("hw_version") == ${HW_VERSION} and entry.get("loader_version") == ${LOADER_VERSION}:
@@ -118,7 +134,6 @@ for i, entry in enumerate(data):
 if not replaced:
     data.append(new_entry)
 
-# Sort by hw_version then loader_version for readability
 data.sort(key=lambda e: (e.get("hw_version", 0), e.get("loader_version", 0)))
 
 with open(manifest_path, "w") as f:
@@ -132,24 +147,22 @@ EOF
 echo ""
 echo "[ 6/6 ] Committing and pushing to GitHub..."
 
-cd "$APPS_REPO"
+cd "$PAGES_REPO"
+git pull
 git add bootloader_downloads/
 git commit -m "Add factory loader v${FULL_VERSION}
 
-Binary: ${BIN_NAME}
-Size:   ${BIN_SIZE} bytes
-SHA256: ${SHA256}"
+Factory app: ${APP_BIN_NAME} (${APP_SIZE} bytes)
+Bootloader:  ${BL_BIN_NAME}
+Partitions:  ${PT_BIN_NAME}
+SHA256:      ${SHA256}"
 git push
 
 echo ""
 echo "========================================"
 echo "  Done! Loader v${FULL_VERSION} is live."
 echo ""
-echo "  Manifest URL:"
-echo "  ${GITHUB_PAGES_BASE}/loader_manifest.json"
-echo ""
-echo "  Binary URL:"
-echo "  ${BINARY_URL}"
+echo "  Manifest: ${GITHUB_PAGES_BASE}/loader_manifest.json"
 echo "========================================"
 echo ""
 echo "NOTE: Remember to also commit the updated LOADER_SW_VERSION"
