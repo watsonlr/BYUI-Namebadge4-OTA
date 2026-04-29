@@ -270,22 +270,16 @@ static void disp_data(const uint8_t *data, int len)
 }
 
 /* Set address window, then send RAMWR command so pixels can follow.
- * Panel is physically 240 cols × 320 rows.  In landscape mounting with MADCTL MX=1:
- *   col axis  = vertical   (col 239=top, col 0=bottom)  → pc = (DISPLAY_H-1) - y
- *   row axis  = horizontal (row 0=right, row 319=left)  → pr = (DISPLAY_W-1) - x
- * Callers must send pixel data in REVERSED x order so pixel[0] lands at pr0. */
+ * With MADCTL MV=1 (row/col exchange): CASET addresses panel rows (x, 0..319),
+ * RASET addresses panel cols (y, 0..239).  Direct mapping — no inversions needed. */
 static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t d[4];
-    uint16_t pc0 = (DISPLAY_H - 1) - y1;   /* physical col start */
-    uint16_t pc1 = (DISPLAY_H - 1) - y0;   /* physical col end   */
-    uint16_t pr0 = (DISPLAY_W - 1) - x1;   /* physical row start (x reversed) */
-    uint16_t pr1 = (DISPLAY_W - 1) - x0;   /* physical row end   (x reversed) */
     disp_cmd(0x2A);
-    d[0]=pc0>>8; d[1]=pc0&0xFF; d[2]=pc1>>8; d[3]=pc1&0xFF;
+    d[0]=y0>>8; d[1]=y0&0xFF; d[2]=y1>>8; d[3]=y1&0xFF;
     disp_data(d, 4);
     disp_cmd(0x2B);
-    d[0]=pr0>>8; d[1]=pr0&0xFF; d[2]=pr1>>8; d[3]=pr1&0xFF;
+    d[0]=x0>>8; d[1]=x0&0xFF; d[2]=x1>>8; d[3]=x1&0xFF;
     disp_data(d, 4);
     disp_cmd(0x2C);
 }
