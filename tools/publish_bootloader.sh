@@ -100,7 +100,7 @@ cp "$BUILD_BL"  "${BOOTLOADER_DIR}/${BL_BIN_NAME}"
 cp "$BUILD_PT"  "${BOOTLOADER_DIR}/${PT_BIN_NAME}"
 
 echo "    Copied → ${APP_BIN_NAME}  (factory app,     0x20000)"
-echo "    Copied → ${BL_BIN_NAME}   (ESP-IDF bootloader, 0x1000)"
+echo "    Copied → ${BL_BIN_NAME}   (ESP-IDF bootloader, 0x0)"
 echo "    Copied → ${PT_BIN_NAME}   (partition table,    0x8000)"
 
 # ── Step 5: Compute SHA-256 for factory app ───────────────────────────────────
@@ -140,7 +140,7 @@ new_entry = {
     "hw_version":     ${HW_VERSION},
     "loader_version": ${LOADER_VERSION},
     "binaries": [
-        {"url": "${BL_URL}",  "address": 0x1000},
+        {"url": "${BL_URL}",  "address": 0x0},
         {"url": "${PT_URL}",  "address": 0x8000},
         {"url": "${APP_URL}", "address": 0x20000},
     ],

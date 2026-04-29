@@ -23,7 +23,7 @@ extern "C" {
 #define LOADER_HW_VERSION   4
 
 /** Factory-loader software release number (increment when updating). */
-#define LOADER_SW_VERSION   1
+#define LOADER_SW_VERSION   2
 
 /**
  * @brief Display the loader menu and handle user input indefinitely.
