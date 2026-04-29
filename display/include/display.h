@@ -69,12 +69,6 @@ typedef struct {
 void display_init(void);
 
 /**
- * @brief Send a raw MADCTL value (0x36) to change scan direction / rotation.
- * @param madctl  e.g. 0x00, 0x60, 0xC0, 0xA0, 0x20, 0xE0 …
- */
-void display_set_madctl(uint8_t madctl);
-
-/**
  * @brief Fill the entire screen with a solid colour.
  * @param color  RGB565 colour value (host byte-order).
  */

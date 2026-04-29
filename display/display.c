@@ -307,14 +307,6 @@ static inline void pack_pixel(uint8_t *dst, uint16_t color)
  * ILI9341 initialisation
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void ili9341_hw_reset(void)
-{
-    gpio_set_level(DISP_PIN_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(DISP_PIN_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(120));
-}
-
 static void ili9341_init_regs(void)
 {
     disp_cmd(0x01); vTaskDelay(pdMS_TO_TICKS(150)); /* software reset */
@@ -341,15 +333,19 @@ static void ili9341_init_regs(void)
                                            0x31,0xC1,0x48,0x08,0x0F,0x0C,
                                            0x31,0x36,0x0F}, 15);
     disp_cmd(0x11); vTaskDelay(pdMS_TO_TICKS(120)); /* sleep out */
-    disp_cmd(0x36); disp_data((uint8_t[]){0xE0}, 1);   /* MADCTL: MY=1, MX=1, MV=1 — landscape, 180° from 0x20 */
+    disp_cmd(0x36); disp_data((uint8_t[]){0xE0}, 1);   /* MADCTL: MY=1, MX=1, MV=1 — landscape */
     disp_cmd(0x21);                                  /* inversion on — panel default is inverted */
     disp_cmd(0x29);                                  /* display on */
 }
 
 static void spi_and_gpio_init(void)
 {
+    /* RST is already configured and driven LOW by display_init() before this
+     * call — do not touch it here. Pre-load DC then enable drive. */
+    gpio_set_level(DISP_PIN_DC, 0);
+
     gpio_config_t io = {
-        .pin_bit_mask = (1ULL << DISP_PIN_DC) | (1ULL << DISP_PIN_RST),
+        .pin_bit_mask = (1ULL << DISP_PIN_DC),
         .mode         = GPIO_MODE_OUTPUT,
     };
     ESP_ERROR_CHECK(gpio_config(&io));
@@ -378,17 +374,27 @@ static void spi_and_gpio_init(void)
  * Public API
  * ═══════════════════════════════════════════════════════════════════ */
 
-void display_set_madctl(uint8_t madctl)
-{
-    disp_cmd(0x36);
-    disp_data(&madctl, 1);
-}
-
 void display_init(void)
 {
     ESP_LOGI(TAG, "Initialising SPI2 and ILI9341 (landscape 320×240)");
+
+    /* Assert RST LOW before SPI init.  While the ILI9341 is in hardware reset
+     * it ignores CS and all SPI activity, so any CS glitch that spi_bus_add_device
+     * produces when it drives GPIO 0 from input to output is completely harmless.
+     * This is what caused display orientation to alternate on every hardware reset. */
+    gpio_set_level(DISP_PIN_RST, 0);
+    gpio_config_t rst_cfg = {
+        .pin_bit_mask = (1ULL << DISP_PIN_RST),
+        .mode         = GPIO_MODE_OUTPUT,
+    };
+    ESP_ERROR_CHECK(gpio_config(&rst_cfg));
+
     spi_and_gpio_init();
-    ili9341_hw_reset();
+
+    vTaskDelay(pdMS_TO_TICKS(10));   /* RST low hold: ILI9341 min is 10 µs */
+    gpio_set_level(DISP_PIN_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(150));  /* post-reset stabilisation */
+
     ili9341_init_regs();
     ESP_LOGI(TAG, "Display ready");
 }
