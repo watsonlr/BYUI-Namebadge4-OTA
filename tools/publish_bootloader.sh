@@ -6,11 +6,27 @@
 set -e
 
 LOADER_REPO="$(cd "$(dirname "$0")/.." && pwd)"
-PAGES_REPO="${HOME}/Documents/Repositories/byu-i-ebadge.github.io"
-BOOTLOADER_DIR="${PAGES_REPO}/bootloader_downloads"
-MANIFEST="${BOOTLOADER_DIR}/loader_manifest.json"
 HW_VERSION=4
 GITHUB_PAGES_BASE="https://byu-i-ebadge.github.io/bootloader_downloads"
+
+# Locate the Pages repo — set NAMEBADGE_PAGES_REPO to override
+if [[ -z "${NAMEBADGE_PAGES_REPO:-}" ]]; then
+    # Try sibling of the parent of this repo
+    SIBLING="$(cd "${LOADER_REPO}/.." && pwd)/byu-i-ebadge.github.io"
+    if [[ -d "${SIBLING}/.git" ]]; then
+        NAMEBADGE_PAGES_REPO="${SIBLING}"
+    fi
+fi
+if [[ -z "${NAMEBADGE_PAGES_REPO:-}" ]] || [[ ! -d "${NAMEBADGE_PAGES_REPO}/.git" ]]; then
+    echo "ERROR: Cannot find the byu-i-ebadge.github.io Pages repo."
+    echo "       Clone it, then set the env var:"
+    echo "       git clone git@github.com:BYU-I-eBadge/byu-i-ebadge.github.io.git"
+    echo "       export NAMEBADGE_PAGES_REPO=/path/to/byu-i-ebadge.github.io"
+    exit 1
+fi
+PAGES_REPO="${NAMEBADGE_PAGES_REPO}"
+BOOTLOADER_DIR="${PAGES_REPO}/bootloader_downloads"
+MANIFEST="${BOOTLOADER_DIR}/loader_manifest.json"
 
 # ── Step 1: Prompt for loader version number ──────────────────────────────────
 echo ""
@@ -51,7 +67,14 @@ echo "    Updated ${INTERNAL_HEADER}"
 echo ""
 echo "[ 2/6 ] Building (this takes ~30 s)..."
 
-source /home/lynn/esp/esp-idf/export.sh > /dev/null 2>&1
+if [[ -n "${IDF_PATH:-}" ]]; then
+    source "${IDF_PATH}/export.sh" > /dev/null 2>&1
+elif [[ -f "${HOME}/esp/esp-idf/export.sh" ]]; then
+    source "${HOME}/esp/esp-idf/export.sh" > /dev/null 2>&1
+else
+    echo "ERROR: ESP-IDF not found. Set IDF_PATH or install to ~/esp/esp-idf."
+    exit 1
+fi
 cd "$LOADER_REPO"
 idf.py build 2>&1 | tail -5
 
