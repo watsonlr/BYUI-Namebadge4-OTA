@@ -5,7 +5,7 @@ idf_component_register(
                 nvs_flash
                 esp_wifi esp_event esp_netif
                 esp_http_client esp-tls
-                app_update
+                app_update spi_flash
                 esp_psram heap
                 mbedtls json
                 display

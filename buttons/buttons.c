@@ -17,8 +17,9 @@
 #define GPIO_A      34
 #define GPIO_B      33
 
-#define POLL_MS      10   /* task wakes every 10 ms                     */
-#define DEBOUNCE_MS  30   /* button must be held this long to register  */
+#define POLL_MS       10   /* task wakes every 10 ms                     */
+#define DEBOUNCE_MS   30   /* button must be held this long to register  */
+#define GLITCH_MS      8   /* brief HIGH during press shorter than this is ignored */
 
 static struct {
     gpio_num_t pin;
@@ -77,16 +78,24 @@ static void button_task(void *arg)
             switch (state[i]) {
             case STATE_IDLE:
                 if (low) {
-                    state[i]       = STATE_DEBOUNCING;
-                    press_since[i] = now;
+                    state[i]         = STATE_DEBOUNCING;
+                    press_since[i]   = now;
+                    release_since[i] = 0;
                 }
                 break;
 
             case STATE_DEBOUNCING:
                 if (!low) {
-                    /* Released before debounce elapsed — was a glitch */
-                    state[i] = STATE_IDLE;
-                } else if ((now - press_since[i]) >= (int64_t)DEBOUNCE_MS * 1000) {
+                    /* Brief HIGH glitch — only abort if it persists past GLITCH_MS */
+                    if (release_since[i] == 0) release_since[i] = now;
+                    else if ((now - release_since[i]) >= (int64_t)GLITCH_MS * 1000) {
+                        state[i]         = STATE_IDLE;
+                        release_since[i] = 0;
+                    }
+                } else {
+                    release_since[i] = 0;  /* back low — clear glitch timer */
+                }
+                if (low && (now - press_since[i]) >= (int64_t)DEBOUNCE_MS * 1000) {
                     /* Held long enough — fire event */
                     button_t event = BTN_MAP[i].bit;
                     ESP_LOGI(TAG, "Button event: 0x%02X (core %d)", event, xPortGetCoreID());

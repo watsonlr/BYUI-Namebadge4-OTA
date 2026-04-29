@@ -129,6 +129,20 @@ uint16_t *ota_manager_fetch_icon(const char *url);
  */
 void ota_manager_wifi_disconnect(void);
 
+/**
+ * @brief Download MicroPython from the apps manifest and write it to raw flash.
+ *
+ * Fetches https://byu-i-ebadge.github.io/apps/manifest.json, finds the
+ * MicroPython multi-binary entry, and writes each binary to its raw flash
+ * address (bootloader 0x0, partition table 0x8000, app 0x10000).
+ * THIS REPLACES THE BADGE OS BOOTLOADER AND PARTITION TABLE.
+ * Recovery: use the webflash site.
+ *
+ * On success: calls esp_restart() — never returns.
+ * On failure: returns an error code; WiFi is disconnected.
+ */
+ota_result_t ota_manager_flash_micropython(void);
+
 #ifdef __cplusplus
 }
 #endif

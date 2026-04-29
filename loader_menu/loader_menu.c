@@ -45,7 +45,7 @@
 #define ITEM_ARROW_X     8
 #define ITEM_TEXT_X     32
 
-#define NUM_ITEMS     7
+#define NUM_ITEMS     6
 #define VISIBLE_ITEMS 6          /* item rows visible at once           */
 #define VISIBLE_APPS  4          /* max app rows visible at once        */
 
@@ -55,9 +55,8 @@ static const char *ITEM_LABELS[NUM_ITEMS] = {
     "SDCard Apps",
     "Reset Wifi/Config",
     "Full Factory Reset",
-    "Arduino Program",
     "Load MicroPython",
-    "ESP-IDF Program",
+    "Program w/ESP-IDF",
 };
 
 static const char *item_label(int idx)
@@ -133,18 +132,7 @@ static void draw_menu(int selected, int scroll)
     if (gap_top < FOOTER_Y)
         display_fill_rect(0, gap_top, DISPLAY_W, FOOTER_Y - gap_top, DISPLAY_COLOR_BLACK);
 
-    bool more_above = scroll > 0;
-    bool more_below = scroll + VISIBLE_ITEMS < NUM_ITEMS;
-    char hint[48];
-    if (more_above && more_below)
-        snprintf(hint, sizeof(hint), "^ Up/Dn:move  A:select  v");
-    else if (more_above)
-        snprintf(hint, sizeof(hint), "^ Up/Dn:move  A:select");
-    else if (more_below)
-        snprintf(hint, sizeof(hint), "Up/Dn:move  A:select  v");
-    else
-        snprintf(hint, sizeof(hint), "Up/Dn:move  Right/A:select");
-    draw_footer(hint);
+    draw_footer("Up/Dn:move  Right/A:select");
 }
 
 /* ── Info / stub screens ───────────────────────────────────────────── */
@@ -450,7 +438,7 @@ static void action_usb_program(void)
 
     /* Header */
     display_fill_rect(0, 0, DISPLAY_W, 30, COLOR_HEADER_BG);
-    const char *title = "ESP-IDF Program";
+    const char *title = "Program w/ESP-IDF";
     int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
     display_draw_string((DISPLAY_W - tw) / 2, 7,
                         title, DISPLAY_COLOR_WHITE, COLOR_HEADER_BG, 2);
@@ -494,41 +482,6 @@ static void action_usb_program(void)
     wait_any_button();
 }
 
-/* ── Action: Arduino Program ───────────────────────────────────────── */
-
-static void action_arduino_program(void)
-{
-    display_fill(DISPLAY_COLOR_BLACK);
-    display_fill_rect(0, 0, DISPLAY_W, 30, COLOR_HEADER_BG);
-    {
-        const char *t = "Arduino Program";
-        int tw = (int)strlen(t) * DISPLAY_FONT_W * 2;
-        display_draw_string((DISPLAY_W - tw) / 2, 7,
-                            t, DISPLAY_COLOR_WHITE, COLOR_HEADER_BG, 2);
-    }
-
-    /* 9 lines at 16 px spacing — all fit between header (y=30) and
-     * footer (y=212) with room to spare.                            */
-    static const char *lines[] = {
-        "1. Install BYUI board package",
-        "   in Arduino IDE (one-time):",
-        "   github.com/watsonlr/",
-        "   namebadge-apps (arduino/)",
-        "",
-        "2. Select: BYUI eBadge V4",
-        "   in Tools > Board",
-        "",
-        "3. Write sketch, click Upload.",
-    };
-    for (int i = 0; i < 9; i++) {
-        display_draw_string(8, 36 + i * 16, lines[i],
-                            DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
-    }
-
-    draw_footer("Press any button to return");
-    wait_any_button();
-}
-
 /* ── Action: Update SD recovery (stub) ────────────────────────────── */
 
 static void action_sd_recovery(void)
@@ -545,19 +498,66 @@ static void action_sd_recovery(void)
                      lines, sizeof(lines) / sizeof(lines[0]));
 }
 
-/* ── Action: Load MicroPython (stub) ───────────────────────────────── */
+/* ── Action: Load MicroPython ──────────────────────────────────────── */
 
 static void action_load_micropython(void)
 {
+    /* Warning screen — this overwrites the badge OS */
+    display_fill(DISPLAY_COLOR_BLACK);
+    draw_header_titled("Load MicroPython");
+
     const char *lines[] = {
-        "MicroPython loading is",
-        "coming in a future update.",
+        "This will REPLACE the badge OS",
+        "with MicroPython.",
         "",
-        "To install apps now, use",
-        "option 1 (OTA Download).",
+        "To restore the badge OS,",
+        "use the webflash site.",
+        "",
+        "A: Continue   B: Cancel",
     };
-    show_info_screen("Load MicroPython",
-                     lines, sizeof(lines) / sizeof(lines[0]));
+    for (int i = 0; i < 7; i++) {
+        display_draw_string(8, 40 + i * 22, lines[i],
+                            i == 0 ? DISPLAY_COLOR_RED : DISPLAY_COLOR_WHITE,
+                            DISPLAY_COLOR_BLACK, 1);
+    }
+
+    button_t btn = buttons_wait_event(0);
+    if (!(btn & BTN_A)) return;
+
+    ota_result_t r = ota_manager_flash_micropython();
+    /* Only reaches here on error — success reboots inside the function. */
+
+    const char *msg;
+    switch (r) {
+    case OTA_RESULT_NO_WIFI:
+        display_fill(DISPLAY_COLOR_BLACK);
+        draw_header_titled("Load MicroPython");
+        display_draw_string(
+            (DISPLAY_W - 19 * DISPLAY_FONT_W * 2) / 2, 95,
+            "WiFi Connect Failed",
+            DISPLAY_COLOR_RED, DISPLAY_COLOR_BLACK, 2);
+        display_draw_string(
+            (DISPLAY_W - 19 * DISPLAY_FONT_W * 2) / 2, 135,
+            "A: Reconfigure WiFi",
+            DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+        {
+            button_t b;
+            do { b = buttons_wait_event(0); } while (!(b & BTN_A));
+        }
+        nvs_flash_erase_partition(WIFI_CONFIG_NVS_PARTITION);
+        esp_restart();
+        return;
+    case OTA_RESULT_NO_MANIFEST: msg = "Manifest not found.";  break;
+    case OTA_RESULT_FLASH_FAIL:  msg = "Flash write failed.";  break;
+    default:                     msg = "Install failed.";      break;
+    }
+    display_fill(DISPLAY_COLOR_BLACK);
+    draw_header_titled("Load MicroPython");
+    int mw = (int)strlen(msg) * DISPLAY_FONT_W * 2;
+    display_draw_string((DISPLAY_W - mw) / 2, 110,
+                        msg, DISPLAY_COLOR_RED, DISPLAY_COLOR_BLACK, 2);
+    draw_footer("Press any button to return");
+    wait_any_button();
 }
 
 /* ── Public entry point ────────────────────────────────────────────── */
@@ -565,30 +565,19 @@ static void action_load_micropython(void)
 void loader_menu_run(void)
 {
     int selection = 0;
-    int scroll    = 0;
-    draw_menu(selection, scroll);
+    draw_menu(selection, 0);
     ESP_LOGI(TAG, "loader_menu_run: entering menu loop");
     for (;;) {
         button_t btn = buttons_wait_event(0);
         ESP_LOGI(TAG, "loader_menu_run: got button event 0x%02X", btn);
         if (btn & (BTN_UP | BTN_LEFT)) {
             selection = (selection - 1 + NUM_ITEMS) % NUM_ITEMS;
-            /* Wrap-around: jumping from top to bottom — snap scroll to show it. */
-            if (selection == NUM_ITEMS - 1)
-                scroll = NUM_ITEMS - VISIBLE_ITEMS;
-            else if (selection < scroll)
-                scroll = selection;
-            draw_menu(selection, scroll);
+            draw_menu(selection, 0);
             continue;
         }
         if (btn & (BTN_DOWN | BTN_B)) {
             selection = (selection + 1) % NUM_ITEMS;
-            /* Wrap-around: jumping from bottom to top — snap scroll to 0. */
-            if (selection == 0)
-                scroll = 0;
-            else if (selection >= scroll + VISIBLE_ITEMS)
-                scroll = selection - VISIBLE_ITEMS + 1;
-            draw_menu(selection, scroll);
+            draw_menu(selection, 0);
             continue;
         }
         if (btn & (BTN_RIGHT | BTN_A)) {
@@ -599,13 +588,12 @@ void loader_menu_run(void)
             case 1:  action_sd_load();             break;
             case 2:  action_reset_wifi_config();   break;
             case 3:  action_reset_board_factory(); break;
-            case 4:  action_arduino_program();     break;
-            case 5:  action_load_micropython();    break;
-            case 6:  action_usb_program();         break;
+            case 4:  action_load_micropython();    break;
+            case 5:  action_usb_program();         break;
             default: break;
             }
             display_fill(DISPLAY_COLOR_BLACK);
-            draw_menu(selection, scroll);
+            draw_menu(selection, 0);
         }
     }
 }

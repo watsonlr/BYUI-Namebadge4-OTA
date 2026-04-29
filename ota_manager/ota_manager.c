@@ -44,6 +44,7 @@
 #include "mbedtls/sha256.h"
 #include "cJSON.h"
 #include "esp_heap_caps.h"
+#include "esp_flash.h"
 
 #include "display.h"
 
@@ -666,6 +667,208 @@ ota_result_t ota_manager_flash_app(const ota_app_entry_t *app)
     vTaskDelay(pdMS_TO_TICKS(1500));
     /* White fill lets TN pixels settle to a clean state so the student app
      * does not inherit the loader menu ghost on its first frame. */
+    display_fill(DISPLAY_COLOR_WHITE);
+    vTaskDelay(pdMS_TO_TICKS(600));
+    esp_restart();
+
+    return OTA_RESULT_OK;  /* unreachable */
+}
+
+/* ── MicroPython raw-flash path ──────────────────────────────────────── *
+ * MicroPython uses its own bootloader, partition table, and factory app
+ * at fixed addresses (0x0, 0x8000, 0x10000).  These can't be written via
+ * the OTA API — they require direct raw flash writes.
+ * After this runs the badge OS is replaced; use the webflash site to restore.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+#define UPYTHON_NAME       "MicroPython"
+#define UPYTHON_BIN_MAX    4
+#define FLASH_SECTOR_SZ    4096
+
+typedef struct { char url[OTA_APP_URL_MAX]; uint32_t address; } upython_bin_t;
+typedef struct { upython_bin_t bins[UPYTHON_BIN_MAX]; int count; } upython_entry_t;
+
+static esp_err_t parse_upython_entry(const char *json, upython_entry_t *out)
+{
+    out->count = 0;
+    cJSON *root = cJSON_Parse(json);
+    if (!root) return ESP_FAIL;
+
+    cJSON *apps = cJSON_IsObject(root) ? cJSON_GetObjectItem(root, "apps") : root;
+    if (!cJSON_IsArray(apps)) { cJSON_Delete(root); return ESP_FAIL; }
+
+    cJSON *item = NULL;
+    cJSON_ArrayForEach(item, apps) {
+        cJSON *j_name = cJSON_GetObjectItem(item, "name");
+        if (!cJSON_IsString(j_name) ||
+            strcmp(j_name->valuestring, UPYTHON_NAME) != 0) continue;
+
+        cJSON *j_bins = cJSON_GetObjectItem(item, "binaries");
+        if (!cJSON_IsArray(j_bins)) break;
+
+        cJSON *bin = NULL;
+        cJSON_ArrayForEach(bin, j_bins) {
+            if (out->count >= UPYTHON_BIN_MAX) break;
+            cJSON *j_url  = cJSON_GetObjectItem(bin, "url");
+            cJSON *j_addr = cJSON_GetObjectItem(bin, "address");
+            if (!cJSON_IsString(j_url) || !cJSON_IsNumber(j_addr)) continue;
+            strlcpy(out->bins[out->count].url,  j_url->valuestring, OTA_APP_URL_MAX);
+            out->bins[out->count].address = (uint32_t)j_addr->valuedouble;
+            out->count++;
+        }
+        break;
+    }
+    cJSON_Delete(root);
+    return (out->count > 0) ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t download_and_flash_raw(const char *url, uint32_t address,
+                                         int bin_num, int bin_total)
+{
+    ESP_LOGI(TAG, "Raw flash binary %d/%d @ 0x%08" PRIx32 ": %s",
+             bin_num, bin_total, address, url);
+
+    esp_http_client_config_t cfg = {
+        .url                   = url,
+        .crt_bundle_attach     = esp_crt_bundle_attach,
+        .timeout_ms            = 120000,
+        .buffer_size           = OTA_CHUNK_SIZE,
+        .max_redirection_count = 3,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return ESP_FAIL;
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) { esp_http_client_cleanup(client); return err; }
+
+    int content_len = (int)esp_http_client_fetch_headers(client);
+    if (esp_http_client_get_status_code(client) != 200 || content_len <= 0) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+
+    /* Erase the full region before streaming so writes never hit uncleared cells. */
+    uint32_t erase_sz = ((uint32_t)content_len + FLASH_SECTOR_SZ - 1)
+                        & ~(uint32_t)(FLASH_SECTOR_SZ - 1);
+    {
+        char lbl[32];
+        snprintf(lbl, sizeof(lbl), "Erasing %d/%d...", bin_num, bin_total);
+        show_status(lbl, NULL);
+    }
+    err = esp_flash_erase_region(NULL, address, erase_sz);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Erase 0x%" PRIx32 "+%" PRIu32 " failed: %s",
+                 address, erase_sz, esp_err_to_name(err));
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return err;
+    }
+
+    char prog_name[24];
+    snprintf(prog_name, sizeof(prog_name), "Binary %d/%d", bin_num, bin_total);
+
+    int total = 0, last_pct = -1;
+    while (total < content_len) {
+        int want = content_len - total;
+        if (want > OTA_CHUNK_SIZE) want = OTA_CHUNK_SIZE;
+        int n = esp_http_client_read(client, (char *)s_ota_chunk, want);
+        if (n < 0) { err = ESP_FAIL; break; }
+        if (n == 0) break;
+
+        err = esp_flash_write(NULL, s_ota_chunk, address + (uint32_t)total, (uint32_t)n);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Flash write @ 0x%" PRIx32 " failed: %s",
+                     address + (uint32_t)total, esp_err_to_name(err));
+            break;
+        }
+        total += n;
+
+        int pct = (int)(100LL * total / content_len);
+        if (pct / 2 != last_pct / 2) {
+            last_pct = pct;
+            show_download_progress(prog_name, pct, total / 1024, content_len / 1024);
+        }
+    }
+
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || total != content_len) {
+        ESP_LOGE(TAG, "Raw flash incomplete: %d of %d", total, content_len);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Binary %d/%d done: %d B at 0x%" PRIx32, bin_num, bin_total, total, address);
+    return ESP_OK;
+}
+
+ota_result_t ota_manager_flash_micropython(void)
+{
+    /* Reuse the same WiFi + NVS init path as fetch_catalog. */
+    esp_err_t e = esp_netif_init();
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return OTA_RESULT_NO_WIFI;
+    e = esp_event_loop_create_default();
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return OTA_RESULT_NO_WIFI;
+
+    esp_err_t ue = nvs_flash_init_partition(NVS_PARTITION);
+    if (ue == ESP_ERR_NVS_NO_FREE_PAGES || ue == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase_partition(NVS_PARTITION);
+        nvs_flash_init_partition(NVS_PARTITION);
+    }
+
+    char ssid[33]      = {0};
+    char pass[65]      = {0};
+    char mfst_url[129] = {0};
+    nvs_handle_t h;
+    if (nvs_open_from_partition(NVS_PARTITION, NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK)
+        return OTA_RESULT_NO_WIFI;
+    size_t n;
+    n = sizeof(ssid);     nvs_get_str(h, NVS_KEY_SSID, ssid,     &n);
+    n = sizeof(pass);     nvs_get_str(h, NVS_KEY_PASS, pass,     &n);
+    n = sizeof(mfst_url); nvs_get_str(h, NVS_KEY_MFST, mfst_url, &n);
+    nvs_close(h);
+
+    if (ssid[0] == '\0')     return OTA_RESULT_NO_WIFI;
+    if (mfst_url[0] == '\0') return OTA_RESULT_NO_MANIFEST;
+
+    show_wifi_status("Connecting to WiFi...", ssid);
+    if (!wifi_sta_connect(ssid, pass)) {
+        wifi_sta_disconnect();
+        return OTA_RESULT_NO_WIFI;
+    }
+
+    /* Fetch the apps manifest to find the MicroPython binaries array. */
+    show_status("Fetching manifest...", NULL);
+    static char s_mpy_manifest[6144];
+    int mlen = 0;
+    if (http_get_text(mfst_url, s_mpy_manifest, sizeof(s_mpy_manifest), &mlen) != ESP_OK) {
+        wifi_sta_disconnect();
+        return OTA_RESULT_NO_MANIFEST;
+    }
+
+    upython_entry_t entry;
+    if (parse_upython_entry(s_mpy_manifest, &entry) != ESP_OK) {
+        ESP_LOGE(TAG, "MicroPython entry not found in manifest");
+        wifi_sta_disconnect();
+        return OTA_RESULT_NO_MANIFEST;
+    }
+    ESP_LOGI(TAG, "MicroPython: %d binaries to flash", entry.count);
+
+    /* Flash each binary in manifest order. */
+    for (int i = 0; i < entry.count; i++) {
+        esp_err_t ferr = download_and_flash_raw(
+            entry.bins[i].url, entry.bins[i].address, i + 1, entry.count);
+        if (ferr != ESP_OK) {
+            show_status("Flash failed!", "Use webflash to recover");
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            wifi_sta_disconnect();
+            return OTA_RESULT_FLASH_FAIL;
+        }
+    }
+
+    wifi_sta_disconnect();
+    show_status("MicroPython installed!", "Rebooting...");
+    vTaskDelay(pdMS_TO_TICKS(1500));
     display_fill(DISPLAY_COLOR_WHITE);
     vTaskDelay(pdMS_TO_TICKS(600));
     esp_restart();
