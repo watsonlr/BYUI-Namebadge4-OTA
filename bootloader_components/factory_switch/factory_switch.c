@@ -2,145 +2,217 @@
  * @file factory_switch.c
  * @brief Bootloader hook: handles two independent duties on every reset.
  *
- * ── Duty 1: Apply a staged factory-loader update (software resets only) ──
+ * ── Duty 1a: Single-binary factory update (v1, software resets only) ─────────
  *
- * factory_self_update.c (app context) downloads a new loader binary to the
- * inactive OTA partition, writes a magic flag to the last 16 bytes of RTC
- * slow memory (0x600FFFF0), then calls esp_restart().  On the resulting
- * software reset we detect the flag here and copy the staged binary
- * sector-by-sector into the factory partition, then clear the flag.
- * otadata is left intact so the student app is preserved.
+ * factory_self_update.c downloads a new loader binary to the inactive OTA
+ * partition, writes UPDATE_MAGIC at 0x600FFFF0, then calls esp_restart().
+ * On the resulting software reset we copy the staged binary into the factory
+ * partition and fall through to normal boot with otadata intact.
  *
- * ── Duty 2: Factory-escape via BOOT button (hardware resets only) ────────
+ * ── Duty 1b: Multi-binary full-flash (v2, software resets only) ──────────────
  *
- * GPIO 0 is shared with Display CS but also has a 470 Ω pull-up to 3.3 V
- * and a button to GND.  No debounce capacitor — reads are instant and
- * reliable in bootloader context without any settling delay.
- * display_init() has not run yet, so reading GPIO 0 as a plain input is safe.
+ * ota_manager_flash_micropython() downloads up to 4 binaries (bootloader,
+ * partition table, app, …) into the ota_0/ota_1 raw flash area, writes a
+ * small manifest header there, then sets UPDATE_MAGIC_MULTI at 0x600FFFF0
+ * pointing to that header.  On the next software reset we read the header
+ * from flash (no RTC-memory size-limit issues), install each binary with
+ * ROM SPI functions that bypass all flash-protection checks, then trigger a
+ * second software reset so the new partition table takes effect.
  *
- * User gesture for factory escape:
- *   Press RESET → release RESET (ROM reads GPIO 0 HIGH → normal boot) →
- *   press BOOT within ~500 ms → factory app boots.
+ * ── Duty 2: Factory-escape via BOOT button (hardware resets only) ────────────
  *
- * Plain reset (no BOOT press): OTA app boots directly — single boot, fast.
- * Software reset: otadata left intact (the calling app already set it).
+ * GPIO 0 has a 470 Ω pull-up to 3.3 V and a button to GND.
+ * Press RESET → release RESET → press BOOT within ~500 ms → factory boots.
  */
 
 #include "esp_rom_sys.h"        /* esp_rom_printf, esp_rom_delay_us  */
 #include "esp_rom_spiflash.h"   /* esp_rom_spiflash_erase/read/write */
 #include "soc/reset_reasons.h"  /* soc_reset_reason_t                */
-#include "soc/gpio_reg.h"       /* GPIO_IN_REG                       */
+#include "soc/gpio_reg.h"       /* GPIO_IN_REG — also pulls in soc.h */
 #include "soc/io_mux_reg.h"     /* IO_MUX_GPIO0_REG                  */
+#include "soc/rtc_cntl_reg.h"   /* RTC_CNTL_OPTIONS0_REG / SW_SYS_RST */
 
 /* OTA data partition: two 4 KB sectors at 0xF000 (matches partitions.csv). */
-#define OTADATA_SECTOR_0  (0x0F000u / 4096u)   /* sector 15 */
-#define OTADATA_SECTOR_1  (0x10000u / 4096u)   /* sector 16 */
+#define OTADATA_SECTOR_0  (0x0F000u / 4096u)
+#define OTADATA_SECTOR_1  (0x10000u / 4096u)
 
 /* Factory partition: 1.25 MB at 0x20000 (matches partitions.csv). */
-#define FACTORY_ADDR      0x20000u
-#define FACTORY_SIZE      (1280u * 1024u)       /* 1 310 720 bytes = 320 sectors */
+#define FACTORY_ADDR  0x20000u
+#define FACTORY_SIZE  (1280u * 1024u)
 
-/* BOOT button is on GPIO 0. */
 #define GPIO_BOOT  0
 
-/* ── RTC update flag ─────────────────────────────────────────────── *
- * Occupies the last 16 bytes of RTC slow DRAM (0x600FE000, 8 KB).
- * Survives software reset; cleared on hardware reset.
- * Written by factory_self_update.c in app context.              */
-#define RTC_FLAG_ADDR    0x600FFFF0u
-#define UPDATE_MAGIC     0xFA510A0Bu
+/* ── v2: flash-based detection ───────────────────────────────────── *
+ * The app writes a multi_flash_hdr_t to STAGE_HDR_ADDR before restart.*
+ * factory_switch reads the magic directly from flash — no RTC memory.  */
+#define STAGE_HDR_ADDR  0x160000u
+
+/* ── v1: RTC update flag ─────────────────────────────────────────── *
+ * Last 16 bytes of RTC fast memory.  Survives software reset.        */
+#define RTC_FLAG_ADDR      0x600FFFF0u
+#define UPDATE_MAGIC       0xFA510A0Bu   /* v1 — single binary → factory */
 
 typedef struct {
-    uint32_t magic;           /* UPDATE_MAGIC                      */
-    uint32_t staging_offset;  /* flash byte address of staging data */
-    uint32_t binary_size;     /* byte count of staged loader binary */
-    uint32_t magic_inv;       /* ~magic, second validity check      */
+    uint32_t magic;
+    uint32_t staging_offset;
+    uint32_t binary_size;
+    uint32_t magic_inv;
 } factory_update_flag_t;
 
-/* ── Apply staged factory update ──────────────────────────────────── *
- * Runs in bootloader context (IRAM + ROM only).
- * Uses a 4 KB static buffer — cannot be on the stack.            */
-static uint32_t s_sector_buf[1024];   /* 4 096 bytes, word-aligned */
+/* ── Multi-binary flash header (lives in flash, not RTC memory) ───── *
+ * Written to staging_offset (e.g. 0x160000) by ota_manager before    *
+ * setting UPDATE_MAGIC_MULTI.  factory_switch reads it via ROM SPI.  */
+#define MULTI_HDR_MAGIC  0xFA514D4Cu   /* "FA51ML" */
+#define MULTI_HDR_MAX    4
+
+typedef struct {
+    uint32_t src;   /* source flash address (staged data)  */
+    uint32_t dst;   /* destination flash address           */
+    uint32_t size;  /* byte count                          */
+} multi_bin_entry_t;
+
+typedef struct {
+    uint32_t          magic;          /* MULTI_HDR_MAGIC               */
+    uint32_t          count;          /* number of entries (1..4)      */
+    multi_bin_entry_t bins[MULTI_HDR_MAX]; /* 4 × 12 = 48 bytes        */
+} multi_flash_hdr_t;  /* 4+4+48 = 56 bytes, fits in one flash read     */
+
+/* ── Shared 4 KB sector buffer ───────────────────────────────────── *
+ * Must be static — stack is too small in bootloader context.         */
+static uint32_t s_sector_buf[1024];
+
+/* ── Helpers ──────────────────────────────────────────────────────── */
+
+static void copy_region(uint32_t src, uint32_t dst, uint32_t size)
+{
+    uint32_t sectors = (size + 4095u) / 4096u;
+    for (uint32_t s = 0; s < sectors; s++) {
+        esp_rom_spiflash_erase_sector((dst / 4096u) + s);
+    }
+    for (uint32_t off = 0; off < size; off += 4096u) {
+        uint32_t chunk   = size - off;
+        if (chunk > 4096u) chunk = 4096u;
+        uint32_t aligned = (chunk + 3u) & ~3u;
+        esp_rom_spiflash_read (src + off, s_sector_buf, (int32_t)aligned);
+        esp_rom_spiflash_write(dst + off, s_sector_buf, (int32_t)aligned);
+    }
+}
+
+/* ── Duty 1a: single-binary update ───────────────────────────────── */
 
 static void apply_factory_update(uint32_t staging_offset, uint32_t binary_size)
 {
     if (binary_size == 0 || binary_size > FACTORY_SIZE) {
-        esp_rom_printf("[factory_switch] invalid binary_size %u — aborting update\n",
+        esp_rom_printf("[factory_switch] v1: invalid binary_size %u\n",
                        (unsigned)binary_size);
         return;
     }
-
-    uint32_t sectors = (binary_size + 4095u) / 4096u;
-    esp_rom_printf("[factory_switch] erasing %u factory sectors (@ 0x%05x)...\n",
-                   (unsigned)sectors, (unsigned)FACTORY_ADDR);
-
-    for (uint32_t s = 0; s < sectors; s++) {
-        esp_rom_spiflash_erase_sector((FACTORY_ADDR / 4096u) + s);
-    }
-
-    esp_rom_printf("[factory_switch] copying %u B from 0x%08x to 0x%08x...\n",
+    esp_rom_printf("[factory_switch] v1: copying %u B  0x%05x -> 0x%05x\n",
                    (unsigned)binary_size,
                    (unsigned)staging_offset,
                    (unsigned)FACTORY_ADDR);
-
-    for (uint32_t off = 0; off < binary_size; off += 4096u) {
-        /* Round chunk up to a word boundary for ROM SPI functions. */
-        uint32_t chunk = binary_size - off;
-        if (chunk > 4096u) chunk = 4096u;
-        uint32_t aligned = (chunk + 3u) & ~3u;
-
-        esp_rom_spiflash_read(staging_offset + off, s_sector_buf, (int32_t)aligned);
-        esp_rom_spiflash_write(FACTORY_ADDR  + off, s_sector_buf, (int32_t)aligned);
-    }
-
-    esp_rom_printf("[factory_switch] factory update applied successfully\n");
+    copy_region(staging_offset, FACTORY_ADDR, binary_size);
+    esp_rom_printf("[factory_switch] v1: done\n");
 }
 
-/* ── Bootloader hook (overrides weak symbol in ESP-IDF bootloader) ─── */
+/* ── Duty 1b: multi-binary full-flash ────────────────────────────── */
+
+static void apply_multi_flash(uint32_t hdr_addr)
+{
+    /* Disable the RTC WDT (including flashboot mode) and the super-WDT so the
+     * long flash copy (~20 s for a 1.6 MB binary) does not trigger a reset. */
+    REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0x50D83AA1u);          /* unlock */
+    REG_CLR_BIT(RTC_CNTL_WDTCONFIG0_REG, RTC_CNTL_WDT_FLASHBOOT_MOD_EN);
+    REG_CLR_BIT(RTC_CNTL_WDTCONFIG0_REG, RTC_CNTL_WDT_EN);
+    REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0);                     /* re-lock */
+    REG_WRITE(RTC_CNTL_SWD_WPROTECT_REG, RTC_CNTL_SWD_WKEY_VALUE); /* unlock */
+    REG_SET_BIT(RTC_CNTL_SWD_CONF_REG, RTC_CNTL_SWD_DISABLE);
+    REG_WRITE(RTC_CNTL_SWD_WPROTECT_REG, 0);                    /* re-lock */
+
+    /* Read the header from flash. */
+    multi_flash_hdr_t hdr;
+    esp_rom_spiflash_read(hdr_addr, (uint32_t *)&hdr, sizeof(hdr));
+
+    if (hdr.magic != MULTI_HDR_MAGIC || hdr.count == 0 || hdr.count > MULTI_HDR_MAX) {
+        esp_rom_printf("[factory_switch] v2: bad header magic=%08x count=%u\n",
+                       (unsigned)hdr.magic, (unsigned)hdr.count);
+        return;
+    }
+
+    /* Clear the magic now (flip 1s→0s, no erase needed) so an unexpected
+     * reset mid-copy won't re-run this operation on the next boot. */
+    uint32_t zero = 0u;
+    esp_rom_spiflash_write(hdr_addr, &zero, sizeof(zero));
+
+    esp_rom_printf("[factory_switch] v2: %u binaries to install\n",
+                   (unsigned)hdr.count);
+
+    for (uint32_t b = 0; b < hdr.count; b++) {
+        uint32_t src  = hdr.bins[b].src;
+        uint32_t dst  = hdr.bins[b].dst;
+        uint32_t size = hdr.bins[b].size;
+        if (size == 0) continue;
+        esp_rom_printf("[factory_switch] v2[%u]: 0x%05x -> 0x%05x  %u B\n",
+                       (unsigned)b, (unsigned)src, (unsigned)dst, (unsigned)size);
+        copy_region(src, dst, size);
+        esp_rom_printf("[factory_switch] v2[%u]: done\n", (unsigned)b);
+    }
+
+    esp_rom_printf("[factory_switch] v2: all done — second reboot for new PT\n");
+
+    /* Trigger a second software reset.  The new bootloader (just written to
+     * 0x0) will read the new partition table and boot the new firmware.
+     * The RTC flag is already cleared, so this boot proceeds normally. */
+    REG_WRITE(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST_M);
+    while (1) { ; }
+}
+
+/* ── Bootloader hook ──────────────────────────────────────────────── */
 
 void bootloader_after_init(void)
 {
-    /* ── Check for a pending factory update ───────────────────────── */
+    /* ── v2: multi-binary full-flash (flash-based, no RTC memory) ───── *
+     * Read the magic word directly from the staging header sector.       *
+     * apply_multi_flash clears it immediately after reading the header,  *
+     * so an unexpected mid-copy reset will not re-trigger this path.    */
+    uint32_t flash_magic;
+    esp_rom_spiflash_read(STAGE_HDR_ADDR, &flash_magic, sizeof(flash_magic));
+    if (flash_magic == MULTI_HDR_MAGIC) {
+        esp_rom_printf("[factory_switch] v2 header found in flash\n");
+        apply_multi_flash(STAGE_HDR_ADDR);
+        while (1) { ; }  /* unreachable — apply_multi_flash resets chip */
+    }
+
+    /* ── v1: single-binary factory update (RTC-based) ───────────────── */
     volatile factory_update_flag_t *flag =
             (volatile factory_update_flag_t *)RTC_FLAG_ADDR;
 
-    if (flag->magic == UPDATE_MAGIC && flag->magic_inv == ~UPDATE_MAGIC) {
-        esp_rom_printf("[factory_switch] RTC update flag valid — applying factory update\n");
+    if (flag->magic == UPDATE_MAGIC &&
+               flag->magic_inv == ~UPDATE_MAGIC) {
 
+        esp_rom_printf("[factory_switch] v1 flag valid\n");
         uint32_t staging_offset = flag->staging_offset;
         uint32_t binary_size    = flag->binary_size;
-
-        /* Disarm the flag immediately so a crash mid-update doesn't loop. */
         flag->magic     = 0u;
         flag->magic_inv = 0u;
-
         apply_factory_update(staging_offset, binary_size);
-        /* Fall through: check reset reason and let boot proceed normally.
-         * The calling app used esp_restart() (software reset), so the
-         * reset-reason check below will leave otadata intact and the
-         * student app will continue to run. */
     }
 
     /* ── Check reset reason ───────────────────────────────────────── */
     soc_reset_reason_t reason = esp_rom_get_reset_reason(0);
     esp_rom_printf("[factory_switch] reset reason = %d\n", (int)reason);
 
-    /* Software reset: the calling app set otadata to point at the intended
-     * partition (or left it alone).  Leave otadata intact. */
     if (reason == RESET_REASON_CORE_SW || reason == RESET_REASON_CPU0_SW) {
         esp_rom_printf("[factory_switch] software reset — leaving otadata intact\n");
         return;
     }
 
-    /* ── Hardware reset: poll BOOT button for ~500 ms ─────────────── *
-     * Configure GPIO 0: MCU_SEL=1 (GPIO function, bits 14:12),
-     * FUN_IE=1 (input enable, bit 9).
-     * External 470 Ω pull-up holds the pin HIGH; BOOT press pulls LOW. */
+    /* ── Hardware reset: poll BOOT button for ~500 ms ─────────────── */
     REG_WRITE(IO_MUX_GPIO0_REG, (1u << 12) | (1u << 9));
 
     bool boot_pressed = false;
     for (int i = 0; i < 50; i++) {
-        esp_rom_delay_us(10000);                        /* 10 ms per poll */
+        esp_rom_delay_us(10000);
         if (!(REG_READ(GPIO_IN_REG) & BIT(GPIO_BOOT))) {
             boot_pressed = true;
             break;

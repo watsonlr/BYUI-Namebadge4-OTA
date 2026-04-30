@@ -1,0 +1,23 @@
+[
+  {
+    "name": "Friends Around Me",
+    "version": 1,
+    "url": "https://raw.githubusercontent.com/watsonlr/namebadge-apps/main/apps/friends_around_me.bin",
+    "size": 564208,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+    "name": "Tetris",
+    "version": 1,
+    "url": "https://raw.githubusercontent.com/watsonlr/namebadge-apps/main/apps/tetris.bin",
+    "size": 400000,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
+    "name": "Snake",
+    "version": 2,
+    "url": "https://raw.githubusercontent.com/watsonlr/namebadge-apps/main/apps/snake.bin",
+    "size": 350000,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+]

@@ -161,107 +161,90 @@ static void show_info_screen(const char *title,
     wait_any_button();
 }
 
-/* ── Icon tile app-selection menu ──────────────────────────────────── *
+/* ── Text-only app-selection menu ─────────────────────────────────────── *
  *
- * Layout (320×240, icons 316×76):
- *   Tile 0  y =   0 .. 75   (76 px)
- *   Gap     y =  76          (1 px dark)
- *   Tile 1  y =  77 .. 152  (76 px)
- *   Gap     y = 153          (1 px dark)
- *   Tile 2  y = 154 .. 229  (76 px)
- *   Hint    y = 230 .. 239  (10 px)
+ * Layout (320×240, text listing):
+ *   Header  y =   0 .. 29   (30 px)
+ *   Gap     y =  30 .. 31   (2 px)
+ *   Apps    y =  32 .. 211  (6 × 30px rows = 180 px)
+ *   Footer  y = 212 .. 239  (28 px)
  *
- * Icons are 308×72 px; 6 px L/R and 2 px T/B borders show selection colour.
+ * Shows app name + version in text format, no icon loading required.
  * ────────────────────────────────────────────────────────────────────── */
 
-#define ICON_SLOT_H   76                               /* tile-slot height      */
-#define ICON_TILE_H   OTA_ICON_H                       /* 72 — bitmap height    */
-#define ICON_TILE_W   OTA_ICON_W                       /* 308 — bitmap width    */
-#define ICON_X        ((DISPLAY_W - ICON_TILE_W) / 2)  /* 6 px L/R border      */
-#define ICON_Y_OFF    ((ICON_SLOT_H - ICON_TILE_H) / 2) /* 2 px T/B border     */
-#define ICON_GAP      1                                /* 1 px dark line between */
-#define ICON_HINT_Y   230                              /* hint bar top          */
-#define ICON_HINT_H   (DISPLAY_H - ICON_HINT_Y)       /* 10 px                 */
-#define VISIBLE_ICONS 3
+#define APP_ITEM_H      30
+#define APP_ITEMS_START 32
+#define APP_VISIBLE     6
 
-static int icon_tile_y(int row)
+/* Draw one app item row in text format. */
+static void draw_app_item(int row, const ota_app_entry_t *app, bool selected)
 {
-    return row * (ICON_SLOT_H + ICON_GAP);
-}
+    int y = APP_ITEMS_START + row * APP_ITEM_H;
 
-/* Draw one icon tile.  icons[] may contain NULL (failed/no icon). */
-static void draw_icon_tile(int row, const ota_app_entry_t *app,
-                           const uint16_t *icon_pixels, bool selected)
-{
-    int ty = icon_tile_y(row);
+    uint16_t bg = selected ? DISPLAY_COLOR_RED : DISPLAY_COLOR_WHITE;
+    uint16_t fg = selected ? DISPLAY_COLOR_WHITE : COLOR_DARK;
 
-    /* Background / selection frame colour fills the full 320-px width. */
-    uint16_t frame = selected ? DISPLAY_COLOR_RED : DISPLAY_RGB565(20, 20, 20);
-    display_fill_rect(0, ty, DISPLAY_W, ICON_SLOT_H, frame);
+    display_fill_rect(0, y, DISPLAY_W, APP_ITEM_H, bg);
 
-    if (icon_pixels) {
-        /* Blit the icon; 6 px coloured borders remain L/R, 2 px T/B. */
-        display_draw_bitmap(ICON_X, ty + ICON_Y_OFF, ICON_TILE_W, ICON_TILE_H, icon_pixels);
-    } else {
-        /* Fallback: name + version centred on a solid tile. */
-        int name_w = (int)strlen(app->name) * DISPLAY_FONT_W * 2;
-        int name_x = (DISPLAY_W - name_w) / 2;
-        if (name_x < 4) name_x = 4;
-        display_draw_string(name_x, ty + 22, app->name,
-                            DISPLAY_COLOR_WHITE, frame, 2);
-
-        char ver_buf[12];
-        snprintf(ver_buf, sizeof(ver_buf), "v%" PRIu32, app->version);
-        int ver_w = (int)strlen(ver_buf) * DISPLAY_FONT_W;
-        display_draw_string((DISPLAY_W - ver_w) / 2, ty + 54,
-                            ver_buf, COLOR_DIM_WHITE, frame, 1);
+    if (selected) {
+        /* 3 px yellow border top and bottom for extra visibility */
+        display_fill_rect(0, y,                      DISPLAY_W, 3, COLOR_YELLOW);
+        display_fill_rect(0, y + APP_ITEM_H - 3,     DISPLAY_W, 3, COLOR_YELLOW);
+        display_draw_string(ITEM_ARROW_X, y + 7, ">",
+                            COLOR_YELLOW, bg, ITEM_TEXT_SCALE);
     }
 
-    /* 1 px gap below (not for the last possible tile row) */
-    if (row < VISIBLE_ICONS - 1) {
-        display_fill_rect(0, ty + ICON_SLOT_H, DISPLAY_W, ICON_GAP,
-                          DISPLAY_COLOR_BLACK);
-    }
+    /* App name at scale 2 */
+    char name_buf[32];
+    snprintf(name_buf, sizeof(name_buf), "%s", app->name);
+    display_draw_string(ITEM_TEXT_X, y + 3, name_buf, fg, bg, 2);
+
+    /* Version at scale 1, right side */
+    char ver_buf[16];
+    snprintf(ver_buf, sizeof(ver_buf), "v%" PRIu32, app->version);
+    int ver_w = (int)strlen(ver_buf) * DISPLAY_FONT_W;
+    display_draw_string(DISPLAY_W - ver_w - 8, y + 16,
+                        ver_buf, selected ? COLOR_DIM_WHITE : COLOR_DARK, bg, 1);
 }
 
-static void draw_icon_menu(const ota_catalog_t *catalog,
-                           uint16_t * const icons[],
-                           int selection, int scroll)
+static void draw_app_menu(const ota_catalog_t *catalog, int selection, int scroll)
 {
-    for (int row = 0; row < VISIBLE_ICONS; row++) {
+    draw_header_titled("Select App");
+    
+    /* Fill the 2px gap between header and first item */
+    display_fill_rect(0, HEADER_H, DISPLAY_W, APP_ITEMS_START - HEADER_H, DISPLAY_COLOR_BLACK);
+    
+    for (int row = 0; row < APP_VISIBLE; row++) {
         int idx = scroll + row;
-        if (idx >= catalog->count) {
-            display_fill_rect(0, icon_tile_y(row), DISPLAY_W,
-                              ICON_SLOT_H, DISPLAY_COLOR_WHITE);
+        if (idx < catalog->count) {
+            draw_app_item(row, &catalog->apps[idx], idx == selection);
         } else {
-            draw_icon_tile(row, &catalog->apps[idx],
-                           icons ? icons[idx] : NULL,
-                           idx == selection);
+            display_fill_rect(0, APP_ITEMS_START + row * APP_ITEM_H, 
+                              DISPLAY_W, APP_ITEM_H, DISPLAY_COLOR_BLACK);
         }
     }
+    
+    /* Fill any gap between last item and footer */
+    int gap_top = APP_ITEMS_START + APP_VISIBLE * APP_ITEM_H;
+    if (gap_top < FOOTER_Y)
+        display_fill_rect(0, gap_top, DISPLAY_W, FOOTER_Y - gap_top, DISPLAY_COLOR_BLACK);
 
-    /* Hint bar */
-    display_fill_rect(0, ICON_HINT_Y, DISPLAY_W, ICON_HINT_H, COLOR_FOOTER_BG);
     const char *hint = (catalog->count > 1)
-                       ? "Up/Dn:move  Left:select  B:back"
-                       : "Left:select  B:back";
-    int hw = (int)strlen(hint) * DISPLAY_FONT_W;
-    display_draw_string((DISPLAY_W - hw) / 2, ICON_HINT_Y + 1,
-                        hint, DISPLAY_COLOR_WHITE, COLOR_FOOTER_BG, 1);
+                       ? "Up/Dn:move  Right/A:select  B:back"
+                       : "Right/A:select  B:back";
+    draw_footer(hint);
 }
 
 /**
- * Run the icon-tile app-selection menu.
- * @param icons  Array of OTA_CATALOG_MAX pointers (may be NULL entries).
+ * Run the text-based app-selection menu.
  * @return selected index (0..count-1), or -1 if user pressed B (back).
  */
-static int run_app_select_menu(const ota_catalog_t *catalog,
-                               uint16_t * const icons[])
+static int run_app_select_menu(const ota_catalog_t *catalog)
 {
     int selection = 0;
     int scroll    = 0;
 
-    draw_icon_menu(catalog, icons, selection, scroll);
+    draw_app_menu(catalog, selection, scroll);
 
     for (;;) {
         button_t btn = buttons_wait_event(0);
@@ -270,15 +253,15 @@ static int run_app_select_menu(const ota_catalog_t *catalog,
             if (selection > 0) {
                 selection--;
                 if (selection < scroll) scroll = selection;
-                draw_icon_menu(catalog, icons, selection, scroll);
+                draw_app_menu(catalog, selection, scroll);
             }
 
         } else if (btn & BTN_DOWN) {
             if (selection < catalog->count - 1) {
                 selection++;
-                if (selection >= scroll + VISIBLE_ICONS)
-                    scroll = selection - VISIBLE_ICONS + 1;
-                draw_icon_menu(catalog, icons, selection, scroll);
+                if (selection >= scroll + APP_VISIBLE)
+                    scroll = selection - APP_VISIBLE + 1;
+                draw_app_menu(catalog, selection, scroll);
             }
 
         } else if (btn & (BTN_LEFT | BTN_A | BTN_RIGHT)) {
@@ -292,17 +275,8 @@ static int run_app_select_menu(const ota_catalog_t *catalog,
 
 /* ── Action: OTA download ──────────────────────────────────────────── */
 
-/* Static catalog + icon buffers — too large for the stack. */
+/* Static catalog buffer — too large for the stack. */
 static ota_catalog_t   s_catalog;
-static uint16_t       *s_icons[OTA_CATALOG_MAX];
-
-static void free_icons(int count)
-{
-    for (int i = 0; i < count; i++) {
-        free(s_icons[i]);
-        s_icons[i] = NULL;
-    }
-}
 
 static void action_ota_download(void)
 {
@@ -347,42 +321,22 @@ static void action_ota_download(void)
         return;
     }
 
-    /* ── Step 2: fetch icons while WiFi is up ──────────────────────── */
-    for (int i = 0; i < s_catalog.count; i++) {
-        s_icons[i] = NULL;
-        if (s_catalog.apps[i].icon_url[0] == '\0') continue;
-
-        /* Progress: "Loading icon 2/3..." */
-        display_fill(DISPLAY_COLOR_BLACK);
-        char prog[40];
-        snprintf(prog, sizeof(prog), "Loading icon %d/%d...",
-                 i + 1, s_catalog.count);
-        int pw = (int)strlen(prog) * DISPLAY_FONT_W * 2;
-        display_draw_string((DISPLAY_W - pw) / 2, 108,
-                            prog, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
-
-        s_icons[i] = ota_manager_fetch_icon(s_catalog.apps[i].icon_url);
-        ESP_LOGI(TAG, "icon[%d]: %s", i, s_icons[i] ? "loaded" : "NULL (will use text fallback)");
-    }
-
-    /* ── Step 3: present icon tile selection menu ──────────────────── */
+    /* ── Step 2: present text-based selection menu ─────────────────── */
     /* White fill drives all TN pixels to bright; hold for 600 ms so the
-     * liquid crystals fully respond before dark tile backgrounds are drawn.
+     * liquid crystals fully respond before dark backgrounds are drawn.
      * Without the delay the old menu ghost bleeds through. */
     display_fill(DISPLAY_COLOR_WHITE);
     vTaskDelay(pdMS_TO_TICKS(600));
-    int sel = run_app_select_menu(&s_catalog, (uint16_t * const *)s_icons);
+    int sel = run_app_select_menu(&s_catalog);
 
     if (sel < 0) {
         /* User pressed B — cancel */
-        free_icons(s_catalog.count);
         ota_manager_wifi_disconnect();
         return;
     }
 
-    /* ── Step 4: flash selected app ────────────────────────────────── */
+    /* ── Step 3: flash selected app ────────────────────────────────── */
     ESP_LOGI(TAG, "Selected: %s", s_catalog.apps[sel].name);
-    free_icons(s_catalog.count);   /* free icons before the large flash download */
 
     r = ota_manager_flash_app(&s_catalog.apps[sel]);
     /* On success the device reboots — only error paths reach here. */
@@ -507,18 +461,20 @@ static void action_load_micropython(void)
     draw_header_titled("Load MicroPython");
 
     const char *lines[] = {
-        "This will REPLACE the badge OS",
+        "This will REPLACE",
+        "the badge OS",
         "with MicroPython.",
         "",
-        "To restore the badge OS,",
-        "use the webflash site.",
+        "To restore, use:",
+        "the webflash site.",
         "",
-        "A: Continue   B: Cancel",
+        "A: Continue",
+        "B: Cancel",
     };
-    for (int i = 0; i < 7; i++) {
-        display_draw_string(8, 40 + i * 22, lines[i],
-                            i == 0 ? DISPLAY_COLOR_RED : DISPLAY_COLOR_WHITE,
-                            DISPLAY_COLOR_BLACK, 1);
+    for (int i = 0; i < 9; i++) {
+        display_draw_string(8, 34 + i * 20, lines[i],
+                            i < 2 ? DISPLAY_COLOR_RED : DISPLAY_COLOR_WHITE,
+                            DISPLAY_COLOR_BLACK, 2);
     }
 
     button_t btn = buttons_wait_event(0);

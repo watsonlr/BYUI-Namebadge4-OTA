@@ -674,16 +674,59 @@ ota_result_t ota_manager_flash_app(const ota_app_entry_t *app)
     return OTA_RESULT_OK;  /* unreachable */
 }
 
-/* ── MicroPython raw-flash path ──────────────────────────────────────── *
- * MicroPython uses its own bootloader, partition table, and factory app
- * at fixed addresses (0x0, 0x8000, 0x10000).  These can't be written via
- * the OTA API — they require direct raw flash writes.
- * After this runs the badge OS is replaced; use the webflash site to restore.
- * ──────────────────────────────────────────────────────────────────────── */
+/* ── MicroPython full-flash path ──────────────────────────────────── *
+ * Stages all three MicroPython binaries (bootloader, partition table, *
+ * app) into the raw ota_0/ota_1 flash area using esp_flash_write      *
+ * (no partition-size or protection checks for those addresses).       *
+ * Writes a multi_flash_hdr_t into the first sector (0x160000), arms  *
+ * the v1-format RTC flag at 0x600FFFF0 with UPDATE_MAGIC_MULTI, then *
+ * calls esp_restart(). factory_switch reads the header from flash,    *
+ * copies each binary to its target via ROM SPI, then triggers a       *
+ * second software reset so the new partition table takes effect.      *
+ *                                                                      *
+ * Staging layout (raw flash, spans ota_0 + part of ota_1):            *
+ *   0x160000  multi_flash_hdr_t (56 bytes, 1 sector reserved)         *
+ *   0x161000  bootloader  (~19 KB, 5 sectors, ends at 0x165FFF)       *
+ *   0x166000  partition table (~3 KB, 1 sector)                       *
+ *   0x167000  app binary  (~1.6 MB, ends ~0x303020 < user_data)       *
+ * ──────────────────────────────────────────────────────────────────── */
 
-#define UPYTHON_NAME       "MicroPython"
-#define UPYTHON_BIN_MAX    4
-#define FLASH_SECTOR_SZ    4096
+#define UPYTHON_NAME    "MicroPython"
+#define UPYTHON_BIN_MAX 4
+#define FLASH_SECTOR_SZ 4096
+
+/* Staging layout — all within ota_0/ota_1 raw area (0x160000-0x3DFFFF).
+ *
+ * IMPORTANT: copy_region erases the full destination before copying.
+ * The APP destination is 0x10000..0x1ABFFF (412 sectors for a 1.6 MB app).
+ * STAGE_APP_ADDR must be >= 0x1AC000 so the erase never touches the source.
+ * 0x1C0000 gives ~80 KB of headroom for app size variation.               */
+#define STAGE_HDR_ADDR  0x160000u   /* multi_flash_hdr_t header (1 sector) */
+#define STAGE_BL_ADDR   0x161000u   /* bootloader staging  (~19 KB)        */
+#define STAGE_PT_ADDR   0x166000u   /* partition table staging (~3 KB)     */
+#define STAGE_APP_ADDR  0x1C0000u   /* app staging (~1.6 MB, ends ~0x35C000) */
+
+/* RTC flag — reuses the proven v1 16-byte slot at 0x600FFFF0.
+ * factory_switch distinguishes v1 from v2 by the magic value.
+ * For v2, staging_offset points to multi_flash_hdr_t in flash. */
+#define RTC_FLAG_ADDR       0x600FFFF0u
+#define UPDATE_MAGIC_MULTI  0xFA510A0Cu  /* must match factory_switch.c */
+#define MULTI_HDR_MAGIC     0xFA514D4Cu  /* must match factory_switch.c */
+#define MULTI_HDR_MAX       4
+
+typedef struct { uint32_t src; uint32_t dst; uint32_t size; } multi_bin_entry_t;
+typedef struct {
+    uint32_t          magic;
+    uint32_t          count;
+    multi_bin_entry_t bins[MULTI_HDR_MAX];
+} multi_flash_hdr_t;  /* 4+4+48 = 56 bytes */
+
+typedef struct {
+    uint32_t magic;
+    uint32_t staging_offset;
+    uint32_t binary_size;
+    uint32_t magic_inv;
+} rtc_update_flag_t;
 
 typedef struct { char url[OTA_APP_URL_MAX]; uint32_t address; } upython_bin_t;
 typedef struct { upython_bin_t bins[UPYTHON_BIN_MAX]; int count; } upython_entry_t;
@@ -722,12 +765,12 @@ static esp_err_t parse_upython_entry(const char *json, upython_entry_t *out)
     return (out->count > 0) ? ESP_OK : ESP_FAIL;
 }
 
-static esp_err_t download_and_flash_raw(const char *url, uint32_t address,
-                                         int bin_num, int bin_total)
+/* Download a binary directly to a raw flash address via esp_flash_write.
+ * Uses esp_flash_erase_region (no partition-boundary size limit) so the
+ * write can span the ota_0/ota_1 boundary for large binaries. */
+static esp_err_t download_and_stage(const char *url, uint32_t flash_addr,
+                                     const char *name, uint32_t *out_size)
 {
-    ESP_LOGI(TAG, "Raw flash binary %d/%d @ 0x%08" PRIx32 ": %s",
-             bin_num, bin_total, address, url);
-
     esp_http_client_config_t cfg = {
         .url                   = url,
         .crt_bundle_attach     = esp_crt_bundle_attach,
@@ -748,25 +791,28 @@ static esp_err_t download_and_flash_raw(const char *url, uint32_t address,
         return ESP_FAIL;
     }
 
-    /* Erase the full region before streaming so writes never hit uncleared cells. */
     uint32_t erase_sz = ((uint32_t)content_len + FLASH_SECTOR_SZ - 1)
                         & ~(uint32_t)(FLASH_SECTOR_SZ - 1);
+    display_fill(DISPLAY_COLOR_BLACK);
     {
-        char lbl[32];
-        snprintf(lbl, sizeof(lbl), "Erasing %d/%d...", bin_num, bin_total);
-        show_status(lbl, NULL);
+        const char *prep = "Preparing";
+        int pw = (int)strlen(prep) * DISPLAY_FONT_W * 2;
+        display_draw_string((DISPLAY_W - pw) / 2, 8, prep,
+                            DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+        if (name && name[0]) {
+            int nw = (int)strlen(name) * DISPLAY_FONT_W * 2;
+            display_draw_string((DISPLAY_W - nw) / 2, 32, name,
+                                DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 2);
+        }
     }
-    err = esp_flash_erase_region(NULL, address, erase_sz);
+    err = esp_flash_erase_region(NULL, flash_addr, erase_sz);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Erase 0x%" PRIx32 "+%" PRIu32 " failed: %s",
-                 address, erase_sz, esp_err_to_name(err));
+        ESP_LOGE(TAG, "Stage erase @ 0x%08" PRIx32 " size %" PRIu32 ": %s",
+                 flash_addr, erase_sz, esp_err_to_name(err));
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return err;
     }
-
-    char prog_name[24];
-    snprintf(prog_name, sizeof(prog_name), "Binary %d/%d", bin_num, bin_total);
 
     int total = 0, last_pct = -1;
     while (total < content_len) {
@@ -776,10 +822,11 @@ static esp_err_t download_and_flash_raw(const char *url, uint32_t address,
         if (n < 0) { err = ESP_FAIL; break; }
         if (n == 0) break;
 
-        err = esp_flash_write(NULL, s_ota_chunk, address + (uint32_t)total, (uint32_t)n);
+        err = esp_flash_write(NULL, s_ota_chunk,
+                              flash_addr + (uint32_t)total, (uint32_t)n);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Flash write @ 0x%" PRIx32 " failed: %s",
-                     address + (uint32_t)total, esp_err_to_name(err));
+            ESP_LOGE(TAG, "Stage write @ 0x%08" PRIx32 ": %s",
+                     flash_addr + (uint32_t)total, esp_err_to_name(err));
             break;
         }
         total += n;
@@ -787,7 +834,7 @@ static esp_err_t download_and_flash_raw(const char *url, uint32_t address,
         int pct = (int)(100LL * total / content_len);
         if (pct / 2 != last_pct / 2) {
             last_pct = pct;
-            show_download_progress(prog_name, pct, total / 1024, content_len / 1024);
+            show_download_progress(name, pct, total / 1024, content_len / 1024);
         }
     }
 
@@ -795,16 +842,16 @@ static esp_err_t download_and_flash_raw(const char *url, uint32_t address,
     esp_http_client_cleanup(client);
 
     if (err != ESP_OK || total != content_len) {
-        ESP_LOGE(TAG, "Raw flash incomplete: %d of %d", total, content_len);
+        ESP_LOGE(TAG, "Stage incomplete: %d of %d", total, content_len);
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "Binary %d/%d done: %d B at 0x%" PRIx32, bin_num, bin_total, total, address);
+    *out_size = (uint32_t)total;
+    ESP_LOGI(TAG, "Staged %d B at 0x%" PRIx32, total, flash_addr);
     return ESP_OK;
 }
 
 ota_result_t ota_manager_flash_micropython(void)
 {
-    /* Reuse the same WiFi + NVS init path as fetch_catalog. */
     esp_err_t e = esp_netif_init();
     if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return OTA_RESULT_NO_WIFI;
     e = esp_event_loop_create_default();
@@ -816,20 +863,19 @@ ota_result_t ota_manager_flash_micropython(void)
         nvs_flash_init_partition(NVS_PARTITION);
     }
 
-    char ssid[33]      = {0};
-    char pass[65]      = {0};
-    char mfst_url[129] = {0};
+    char ssid[33] = {0};
+    char pass[65] = {0};
     nvs_handle_t h;
     if (nvs_open_from_partition(NVS_PARTITION, NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK)
         return OTA_RESULT_NO_WIFI;
     size_t n;
-    n = sizeof(ssid);     nvs_get_str(h, NVS_KEY_SSID, ssid,     &n);
-    n = sizeof(pass);     nvs_get_str(h, NVS_KEY_PASS, pass,     &n);
-    n = sizeof(mfst_url); nvs_get_str(h, NVS_KEY_MFST, mfst_url, &n);
+    n = sizeof(ssid); nvs_get_str(h, NVS_KEY_SSID, ssid, &n);
+    n = sizeof(pass); nvs_get_str(h, NVS_KEY_PASS, pass, &n);
     nvs_close(h);
 
-    if (ssid[0] == '\0')     return OTA_RESULT_NO_WIFI;
-    if (mfst_url[0] == '\0') return OTA_RESULT_NO_MANIFEST;
+    if (ssid[0] == '\0') return OTA_RESULT_NO_WIFI;
+
+    const char *mfst_url = "https://byu-i-ebadge.github.io/apps/manifest.json";
 
     show_wifi_status("Connecting to WiFi...", ssid);
     if (!wifi_sta_connect(ssid, pass)) {
@@ -837,7 +883,6 @@ ota_result_t ota_manager_flash_micropython(void)
         return OTA_RESULT_NO_WIFI;
     }
 
-    /* Fetch the apps manifest to find the MicroPython binaries array. */
     show_status("Fetching manifest...", NULL);
     static char s_mpy_manifest[6144];
     int mlen = 0;
@@ -852,23 +897,82 @@ ota_result_t ota_manager_flash_micropython(void)
         wifi_sta_disconnect();
         return OTA_RESULT_NO_MANIFEST;
     }
-    ESP_LOGI(TAG, "MicroPython: %d binaries to flash", entry.count);
 
-    /* Flash each binary in manifest order. */
+    /* Locate the three required binaries by manifest address. */
+    const char *bl_url = NULL, *pt_url = NULL, *app_url = NULL;
     for (int i = 0; i < entry.count; i++) {
-        esp_err_t ferr = download_and_flash_raw(
-            entry.bins[i].url, entry.bins[i].address, i + 1, entry.count);
-        if (ferr != ESP_OK) {
-            show_status("Flash failed!", "Use webflash to recover");
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            wifi_sta_disconnect();
-            return OTA_RESULT_FLASH_FAIL;
-        }
+        uint32_t addr = entry.bins[i].address;
+        if (addr == 0x0u)     bl_url  = entry.bins[i].url;
+        if (addr == 0x8000u)  pt_url  = entry.bins[i].url;
+        if (addr == 0x10000u) app_url = entry.bins[i].url;
+    }
+    if (!bl_url || !pt_url || !app_url) {
+        ESP_LOGE(TAG, "MicroPython manifest missing required binary "
+                 "(bl=%s pt=%s app=%s)",
+                 bl_url ? "ok" : "MISSING",
+                 pt_url ? "ok" : "MISSING",
+                 app_url ? "ok" : "MISSING");
+        wifi_sta_disconnect();
+        return OTA_RESULT_NO_MANIFEST;
+    }
+
+    /* Stage all three binaries into raw flash (ota_0/ota_1 area).
+     * esp_flash_erase_region/write operate on absolute addresses with no
+     * partition-size limit, so the 1.6 MB app can span ota_0 into ota_1. */
+    uint32_t bl_size = 0, pt_size = 0, app_size = 0;
+
+    if (download_and_stage(bl_url,  STAGE_BL_ADDR,  "Bootloader",      &bl_size)  != ESP_OK ||
+        download_and_stage(pt_url,  STAGE_PT_ADDR,  "Partition Table", &pt_size)  != ESP_OK ||
+        download_and_stage(app_url, STAGE_APP_ADDR, "MicroPython",     &app_size) != ESP_OK) {
+        show_status("Download failed!", NULL);
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        wifi_sta_disconnect();
+        return OTA_RESULT_DOWNLOAD_FAIL;
     }
 
     wifi_sta_disconnect();
-    show_status("MicroPython installed!", "Rebooting...");
-    vTaskDelay(pdMS_TO_TICKS(1500));
+
+    /* Write multi_flash_hdr_t into the first sector of the staging area.
+     * factory_switch reads this from flash — no RTC memory size limit. */
+    multi_flash_hdr_t hdr = {
+        .magic = MULTI_HDR_MAGIC,
+        .count = 3,
+        .bins  = {
+            { .src = STAGE_BL_ADDR,  .dst = 0x000000u, .size = bl_size  },
+            { .src = STAGE_PT_ADDR,  .dst = 0x008000u, .size = pt_size  },
+            { .src = STAGE_APP_ADDR, .dst = 0x010000u, .size = app_size },
+        },
+    };
+    show_status("Installing...", "Do not power off");
+    esp_err_t herr = esp_flash_erase_region(NULL, STAGE_HDR_ADDR, FLASH_SECTOR_SZ);
+    if (herr == ESP_OK) {
+        herr = esp_flash_write(NULL, &hdr, STAGE_HDR_ADDR, sizeof(hdr));
+    }
+    if (herr != ESP_OK) {
+        ESP_LOGE(TAG, "Header write failed: %s", esp_err_to_name(herr));
+        show_status("Flash error!", NULL);
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        return OTA_RESULT_FLASH_FAIL;
+    }
+    ESP_LOGI(TAG, "Flash hdr @ 0x%05x: bl=%uB pt=%uB app=%uB",
+             (unsigned)STAGE_HDR_ADDR,
+             (unsigned)bl_size, (unsigned)pt_size, (unsigned)app_size);
+    /* factory_switch detects the operation by reading the header magic
+     * directly from flash — no RTC memory flag needed. */
+
+    /* Show success screen before triggering the install reboot. */
+    display_fill(DISPLAY_COLOR_BLACK);
+    {
+        const char *hd = "MicroPython";
+        int hw = (int)strlen(hd) * DISPLAY_FONT_W * 2;
+        display_draw_string((DISPLAY_W - hw) / 2, 72, hd,
+                            DISPLAY_COLOR_GREEN, DISPLAY_COLOR_BLACK, 2);
+    }
+    display_draw_string(8, 116, "REPL is now running.",
+                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
+    display_draw_string(8, 132, "Connect USB: 115200 baud",
+                        DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 1);
+    vTaskDelay(pdMS_TO_TICKS(3000));
     display_fill(DISPLAY_COLOR_WHITE);
     vTaskDelay(pdMS_TO_TICKS(600));
     esp_restart();
