@@ -333,7 +333,7 @@ static void ili9341_init_regs(void)
                                            0x31,0xC1,0x48,0x08,0x0F,0x0C,
                                            0x31,0x36,0x0F}, 15);
     disp_cmd(0x11); vTaskDelay(pdMS_TO_TICKS(120)); /* sleep out */
-    disp_cmd(0x36); disp_data((uint8_t[]){0xA0}, 1);   /* MADCTL: MY=1, MX=0, MV=1 — landscape, x reversed */
+    disp_cmd(0x36); disp_data((uint8_t[]){0x60}, 1);   /* MADCTL: MY=0, MX=1, MV=1 — landscape */
     disp_cmd(0x21);                                  /* inversion on — panel default is inverted */
     disp_cmd(0x29);                                  /* display on */
 }
