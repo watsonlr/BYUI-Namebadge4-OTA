@@ -158,11 +158,18 @@ static void apply_multi_flash(uint32_t hdr_addr)
         esp_rom_printf("[factory_switch] v2[%u]: done\n", (unsigned)b);
     }
 
-    esp_rom_printf("[factory_switch] v2: all done — second reboot for new PT\n");
+    esp_rom_printf("[factory_switch] v2: all done — cleaning VFS area\n");
 
-    /* Trigger a second software reset.  The new bootloader (just written to
-     * 0x0) will read the new partition table and boot the new firmware.
-     * The RTC flag is already cleared, so this boot proceeds normally. */
+    /* Erase the flash area above the installed partitions so MicroPython
+     * gets a clean filesystem on first boot.  The factory partition ends at
+     * 0x200000; MicroPython uses the space from there to 0x3DFFFF as VFS.
+     * Preserve user_data at 0x3E0000 (badge WiFi credentials).            */
+    for (uint32_t addr = 0x200000u; addr < 0x3E0000u; addr += 4096u) {
+        esp_rom_spiflash_erase_sector(addr / 4096u);
+    }
+    esp_rom_printf("[factory_switch] v2: VFS clean — second reboot\n");
+
+    /* Trigger a second software reset so the new partition table takes effect. */
     REG_WRITE(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST_M);
     while (1) { ; }
 }
