@@ -522,8 +522,8 @@ ota_result_t ota_manager_fetch_catalog(ota_catalog_t *out)
         return OTA_RESULT_NO_WIFI;
     }
     if (mfst_url[0] == '\0') {
-        ESP_LOGW(TAG, "No manifest URL configured");
-        return OTA_RESULT_NO_MANIFEST;
+        strlcpy(mfst_url, "https://byu-i-ebadge.github.io/apps/manifest.json",
+                sizeof(mfst_url));
     }
 
     /* Connect to WiFi */
@@ -973,8 +973,6 @@ ota_result_t ota_manager_flash_micropython(void)
     display_draw_string(8, 132, "Connect USB: 115200 baud",
                         DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 1);
     vTaskDelay(pdMS_TO_TICKS(3000));
-    display_fill(DISPLAY_COLOR_WHITE);
-    vTaskDelay(pdMS_TO_TICKS(600));
     esp_restart();
 
     return OTA_RESULT_OK;  /* unreachable */
