@@ -270,20 +270,16 @@ static void disp_data(const uint8_t *data, int len)
 }
 
 /* Set address window, then send RAMWR command so pixels can follow.
- * MADCTL=0xA0 (MY=1, MX=0, MV=1): row/col exchanged, row scan reversed.
- * CASET (cols 0..239) drives the y-axis, forward with MX=0.
- * RASET (rows 0..319) drives the x-axis, reversed with MY=1: pr = 319-x.
- * Result: pixel data sent left-to-right, top-to-bottom — no reversal needed. */
+ * MADCTL=0xA0 (MY=1, MX=0, MV=1): row/col exchanged.
+ * With MV=1, CASET drives the y-axis and RASET drives the x-axis — direct. */
 static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t d[4];
-    disp_cmd(0x2A);   /* CASET — y direct (MX=0 forward) */
+    disp_cmd(0x2A);   /* CASET — y */
     d[0]=y0>>8; d[1]=y0&0xFF; d[2]=y1>>8; d[3]=y1&0xFF;
     disp_data(d, 4);
-    uint16_t pr0 = (DISPLAY_W - 1) - x1;   /* RASET — x reversed (MY=1) */
-    uint16_t pr1 = (DISPLAY_W - 1) - x0;
-    disp_cmd(0x2B);
-    d[0]=pr0>>8; d[1]=pr0&0xFF; d[2]=pr1>>8; d[3]=pr1&0xFF;
+    disp_cmd(0x2B);   /* RASET — x */
+    d[0]=x0>>8; d[1]=x0&0xFF; d[2]=x1>>8; d[3]=x1&0xFF;
     disp_data(d, 4);
     disp_cmd(0x2C);
 }
