@@ -40,7 +40,9 @@
 #define FACTORY_ADDR  0x20000u
 #define FACTORY_SIZE  (1280u * 1024u)
 
-#define GPIO_BOOT  0
+#define GPIO_BOOT   0
+#define GPIO_BTN_A  34   /* active LOW — held through RESET to escape to factory */
+#define GPIO_BTN_B  33
 
 /* ── v2: flash-based detection ───────────────────────────────────── *
  * The app writes a multi_flash_hdr_t to STAGE_HDR_ADDR before restart.*
@@ -214,6 +216,20 @@ void bootloader_after_init(void)
         return;
     }
 
+    /* ── Hardware reset: check A+B held through RESET ───────────────── *
+     * GPIO 33/34 are normal pads (not LP); enable input + internal pull-up.
+     * User gesture: hold A+B, then press and release RESET.              */
+    /* MCU_SEL=1 (GPIO matrix), FUN_PU=1 (pull-up), FUN_IE=1 (input enable) */
+    REG_WRITE(IO_MUX_GPIO34_REG, (1u << 12) | (1u << 8) | (1u << 9));
+    REG_WRITE(IO_MUX_GPIO33_REG, (1u << 12) | (1u << 8) | (1u << 9));
+    esp_rom_delay_us(1000);   /* 1 ms for pull-ups to settle */
+
+    bool ab_held = !(REG_READ(GPIO_IN1_REG) & BIT(GPIO_BTN_A - 32)) &&
+                   !(REG_READ(GPIO_IN1_REG) & BIT(GPIO_BTN_B - 32));
+    if (ab_held) {
+        esp_rom_printf("[factory_switch] A+B held — escape to factory\n");
+    }
+
     /* ── Hardware reset: poll BOOT button for ~500 ms ─────────────── */
     REG_WRITE(IO_MUX_GPIO0_REG, (1u << 12) | (1u << 9));
 
@@ -226,11 +242,11 @@ void bootloader_after_init(void)
         }
     }
 
-    if (boot_pressed) {
-        esp_rom_printf("[factory_switch] BOOT pressed — erasing otadata\n");
+    if (boot_pressed || ab_held) {
+        if (boot_pressed) esp_rom_printf("[factory_switch] BOOT pressed — erasing otadata\n");
         esp_rom_spiflash_erase_sector(OTADATA_SECTOR_0);
         esp_rom_spiflash_erase_sector(OTADATA_SECTOR_1);
     } else {
-        esp_rom_printf("[factory_switch] BOOT not pressed — leaving otadata intact\n");
+        esp_rom_printf("[factory_switch] no escape gesture — leaving otadata intact\n");
     }
 }
