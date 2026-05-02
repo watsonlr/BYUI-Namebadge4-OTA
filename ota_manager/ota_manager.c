@@ -124,11 +124,11 @@ static void show_download_progress(const char *name, int pct,
         display_draw_string((DISPLAY_W - tw) / 2, 72,
                             title, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
 
-        /* App name at scale 3 */
+        /* App name at scale 2 — same size as "Downloading..." */
         if (name && name[0]) {
-            int nw = (int)strlen(name) * DISPLAY_FONT_W * 3;
+            int nw = (int)strlen(name) * DISPLAY_FONT_W * 2;
             display_draw_string((DISPLAY_W - nw) / 2, 98,
-                                name, DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 3);
+                                name, DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 2);
         }
 
         /* White border (4 strips) — drawn once, never touched again */
