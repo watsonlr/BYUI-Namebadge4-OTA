@@ -120,6 +120,7 @@ The bootloader handles that redirect before the factory app even starts.
 - **Button debounce — state machine:** `STATE_IDLE → STATE_DEBOUNCING → STATE_FIRED`. Both press (30 ms continuous LOW) and release (30 ms continuous HIGH) are debounced independently. One physical press = exactly one queue event, regardless of contact bounce.
 - **WiFi reconfigure after failed OTA:** `ota_manager_fetch_catalog()` initialises `esp_netif` and the default event loop but does not deinit them on failure. Calling `portal_mode_run()` afterward causes `wifi_config_start()` → `start_softap()` → `ESP_ERROR_CHECK(esp_netif_init())` to abort with `ESP_ERR_INVALID_STATE`. Fix: erase `user_data` NVS partition then `esp_restart()` — the factory loader reboots clean and auto-runs the portal since `wifi_config_is_configured()` returns false (nick key gone).
 - **Display text width at scale 2:** `DISPLAY_FONT_W = 8`, scale 2 = 16 px/char, display width = 320 px → **max 20 chars per line** at scale 2. Strings longer than 20 chars overflow the display. The centering formula `(DISPLAY_W - len*FONT_W*scale)/2` goes negative if string is too wide — clamp or shorten the string.
+- **Display stable point (2026-05-03):** ILI9341 viewing orientation, text, colours, and splash are confirmed working on hardware. Use MADCTL `0x00`; map logical landscape coordinates as CASET=`y`, inverted RASET=`DISPLAY_W - 1 - x`; render 8×8 font glyphs MSB-left; `display_draw_row_raw()` mirrors pre-byte-swapped splash rows and sends bytes directly from `png_to_rgb565.py` output.
 - **NVS namespace:** `wifi_config_is_configured()` checks the `nick` key in partition `user_data`, namespace `badge_cfg` (not `wifi_cfg` as previously noted).
 
 ---
@@ -150,4 +151,5 @@ The bootloader handles that redirect before the factory app even starts.
 - **OTA download working:** Fetches catalog, shows icon tiles, streams firmware, reboots into student app.
 - **WiFi fail → reconfigure:** If WiFi connect fails during OTA download, screen shows "WiFi Connect Failed / A: Reconfigure WiFi". Pressing A erases user_data NVS and restarts — factory loader re-runs the full QR-code portal.
 - **SD card load and SD recovery:** stubbed ("coming soon" screens).
+- **Display stable point:** viewing orientation, text glyphs, RGB colours, and splash image rendering confirmed on 2026-05-03.
 - **Welcome screen:** not implemented — factory loader goes directly to portal (if unconfigured) or menu (if configured).

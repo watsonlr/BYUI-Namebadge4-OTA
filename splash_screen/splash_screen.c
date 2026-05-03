@@ -3,8 +3,8 @@
  * @brief Scroll-up splash screen using the display component.
  *
  * Requires display_init() to have been called before splash_screen_run().
- * Pixels in image_rgb565.h are pre-byte-swapped by png_to_rgb565.py and
- * are sent directly to the ILI9341 via display_draw_row_raw().
+ * Pixels in image_rgb565.h are pre-byte-swapped by png_to_rgb565.py.
+ * display_draw_row_raw() mirrors each row and sends those bytes directly.
  */
 
 #include "splash_screen.h"

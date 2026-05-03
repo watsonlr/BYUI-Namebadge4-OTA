@@ -4,7 +4,7 @@
  *
  * Includes a built-in public-domain 8×8 bitmap font covering the full
  * printable ASCII range (0x20–0x7F).  Each font byte is one pixel row;
- * within each byte bit-0 is the leftmost pixel (LSB-left convention).
+ * glyph columns are rendered MSB-left to match the mounted display mapping.
  *
  * Pin assignments from HARDWARE.md (BYUI eBadge V4.0):
  *   CS=0  DC=45  RST=1  CLK=46  MOSI=3  (write-only, no MISO)
@@ -35,7 +35,7 @@ static spi_device_handle_t s_spi;
 
 /* ═══════════════════════════════════════════════════════════════════
  * 8×8 public-domain bitmap font — printable ASCII 0x20–0x7F
- * Encoding: byte[0] = top row … byte[7] = bottom row; bit 0 = left.
+ * Encoding: byte[0] = top row … byte[7] = bottom row; rendered MSB-left.
  * Source: font8x8_basic (https://github.com/dhepper/font8x8) — PD
  * ═══════════════════════════════════════════════════════════════════ */
 static const uint8_t s_font8x8[96][8] = {
@@ -140,7 +140,7 @@ static const uint8_t s_font8x8[96][8] = {
 /* ═══════════════════════════════════════════════════════════════════
  * 8×8 sans-serif bitmap font — printable ASCII 0x20–0x7F
  * Clean strokes, no serifs, open apertures.
- * Encoding: byte[0]=top row … byte[7]=bottom row; bit 0 = leftmost column.
+ * Encoding: byte[0]=top row … byte[7]=bottom row; rendered MSB-left.
  * ═══════════════════════════════════════════════════════════════════ */
 static const uint8_t s_font8x8_sans[96][8] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* 0x20 ' '  */
@@ -270,8 +270,9 @@ static void disp_data(const uint8_t *data, int len)
 }
 
 /* Set address window, then send RAMWR command so pixels can follow.
- * MADCTL=0xA0 (MY=1, MX=0, MV=1): row/col exchanged.
- * With MV=1, CASET drives the y-axis and RASET drives the x-axis — direct. */
+ * The panel is mounted with the FPC on the left, so logical 320x240
+ * landscape maps y through CASET and x through RASET. RASET is inverted
+ * so logical x=0 lands at the mounted left edge. */
 static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t d[4];
@@ -279,7 +280,9 @@ static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     d[0]=y0>>8; d[1]=y0&0xFF; d[2]=y1>>8; d[3]=y1&0xFF;
     disp_data(d, 4);
     disp_cmd(0x2B);   /* RASET — x */
-    d[0]=x0>>8; d[1]=x0&0xFF; d[2]=x1>>8; d[3]=x1&0xFF;
+    uint16_t px0 = DISPLAY_W - 1 - x1;
+    uint16_t px1 = DISPLAY_W - 1 - x0;
+    d[0]=px0>>8; d[1]=px0&0xFF; d[2]=px1>>8; d[3]=px1&0xFF;
     disp_data(d, 4);
     disp_cmd(0x2C);
 }
@@ -333,7 +336,7 @@ static void ili9341_init_regs(void)
                                            0x31,0xC1,0x48,0x08,0x0F,0x0C,
                                            0x31,0x36,0x0F}, 15);
     disp_cmd(0x11); vTaskDelay(pdMS_TO_TICKS(120)); /* sleep out */
-    disp_cmd(0x36); disp_data((uint8_t[]){0x60}, 1);   /* MADCTL: MY=0, MX=1, MV=1 — landscape */
+    disp_cmd(0x36); disp_data((uint8_t[]){0x00}, 1);   /* MADCTL: FPC-left landscape, left-right mirrored */
     disp_cmd(0x21);                                  /* inversion on — panel default is inverted */
     disp_cmd(0x29);                                  /* display on */
 }
@@ -449,7 +452,7 @@ void display_draw_char(int x, int y, char c, uint16_t fg, uint16_t bg, int scale
         /* Build the pixel run for this scaled row. */
         int bi = 0;
         for (int fc = 0; fc < DISPLAY_FONT_W; fc++) {
-            bool lit = (bits >> fc) & 1; /* bit 0 = leftmost column */
+            bool lit = (bits >> (DISPLAY_FONT_W - 1 - fc)) & 1;
             uint8_t hi = lit ? fg_hi : bg_hi;
             uint8_t lo = lit ? fg_lo : bg_lo;
             for (int sx = 0; sx < scale; sx++) {
@@ -500,7 +503,7 @@ static void draw_char_font(int x, int y, char c,
         uint8_t bits = glyph[fr];
         int bi = 0;
         for (int fc = 0; fc < DISPLAY_FONT_W; fc++) {
-            bool lit = (bits >> fc) & 1;
+            bool lit = (bits >> (DISPLAY_FONT_W - 1 - fc)) & 1;
             uint8_t hi = lit ? fg_hi : bg_hi;
             uint8_t lo = lit ? fg_lo : bg_lo;
             for (int sx = 0; sx < scale; sx++) {
@@ -558,7 +561,11 @@ void display_draw_bitmap(int x, int y, int w, int h, const uint16_t *pixels)
 void display_draw_row_raw(int x, int y, int w, const uint16_t *pixels)
 {
     static uint8_t row_buf[DISPLAY_W * 2];
-    for (int i = 0; i < w; i++) pack_pixel(&row_buf[i * 2], pixels[i]);
+    for (int i = 0; i < w; i++) {
+        uint16_t px = pixels[w - 1 - i];
+        row_buf[i * 2] = (uint8_t)(px & 0xFF);
+        row_buf[i * 2 + 1] = (uint8_t)(px >> 8);
+    }
     set_window((uint16_t)x, (uint16_t)y, (uint16_t)(x + w - 1), (uint16_t)y);
     write_pixels(row_buf, w * 2);
 }

@@ -46,8 +46,8 @@ extern "C" {
 
 /* ── Font selector ───────────────────────────────────────────────── */
 typedef enum {
-    DISPLAY_FONT_MONO = 0,  /**< Classic monospace (8×8, LSB-left) */
-    DISPLAY_FONT_SANS = 1,  /**< Clean sans-serif  (8×8, LSB-left) */
+    DISPLAY_FONT_MONO = 0,  /**< Classic monospace (8×8, rendered MSB-left) */
+    DISPLAY_FONT_SANS = 1,  /**< Clean sans-serif  (8×8, rendered MSB-left) */
 } display_font_t;
 
 /* ── Text rendering context ──────────────────────────────────────── */
@@ -139,11 +139,9 @@ void display_draw_bitmap(int x, int y, int w, int h, const uint16_t *pixels);
 /**
  * @brief Write one horizontal strip of pixels at position (x, y).
  *
- * Pixels must already be in ILI9341 wire byte-order (big-endian RGB565,
- * i.e. each uint16_t byte-swapped relative to host order).  This is the
- * format produced by png_to_rgb565.py and is suitable for blitting
- * pre-converted image data directly from flash to the display with no
- * runtime conversion.
+ * Pixels must already be byte-swapped RGB565 values in the format produced
+ * by png_to_rgb565.py.  Rows are mirrored left-right while copying so
+ * splash assets align with the mounted display coordinate mapping.
  *
  * @param x       Left edge in pixels.
  * @param y       Row in pixels.

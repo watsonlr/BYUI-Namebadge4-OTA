@@ -81,7 +81,9 @@
 | MISO (SPI2) | 10 |
 
 - Resolution: 240 × 320 pixels (native portrait), mounted landscape with FPC connector on the left
-- Orientation: MADCTL register `0x36` = `0x40` (MX bit only) — produces correct landscape orientation with the physical FPC-left mounting
+- Orientation confirmed on hardware: MADCTL register `0x36` = `0x00`; the driver maps logical landscape coordinates as CASET = `y` and inverted RASET = `DISPLAY_W - 1 - x`
+- Font rendering note: the built-in 8×8 font tables are rendered MSB-left so text reads correctly with the inverted RASET mapping
+- Splash/raw-row note: `png_to_rgb565.py` emits byte-swapped RGB565 values; `display_draw_row_raw()` mirrors each row left-right and sends those bytes directly. Do not repack raw splash pixels with the normal host-order RGB565 path or BYUI blue appears brown/green.
 - Display inversion: send `0x21` (INVON) during init — this panel powers up inverted by default; INVON is required for correct colours
 - Color format: RGB565 (16-bit), big-endian byte order (high byte first) over SPI; confirmed working: red `0xF800`, green `0x07E0`, blue `0x001F`
 - SPI clock: up to 40 MHz, Mode 0 (CPOL=0, CPHA=0), MSB first

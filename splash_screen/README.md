@@ -4,10 +4,11 @@ Scroll-up splash screen for the BYUI eBadge V3.0 ILI9341 display.
 
 ## What it does
 
-`splash_screen_run()` initialises SPI2 and the ILI9341 in landscape mode
-(320×240), then reveals your image one row at a time from the bottom of the
-screen upward — a smooth "scroll up" effect — then holds the completed image
-for two seconds before returning.
+`splash_screen_run()` expects `display_init()` to have already initialised the
+ILI9341 in the hardware-confirmed landscape orientation (320×240), then reveals
+your image one row at a time from the bottom of the screen upward — a smooth
+"scroll up" effect — then holds the completed image for two seconds before
+returning.
 
 ## Step 1 — Convert your PNG
 
@@ -67,14 +68,19 @@ Two constants at the top of `splash_screen.c` control timing:
 | `SCROLL_ROW_DELAY_MS` | 4 | ms between each revealed row (~1 s total) |
 | `SPLASH_HOLD_MS` | 2000 | ms to hold the completed image |
 
-## Orientation
+## Orientation and Colour
 
-The display is initialised with `MADCTL = 0x68` (landscape, BGR).  If the
-image appears mirrored or rotated, try `0x28`, `0x48`, `0xA8`, or `0xE8` in
-the `disp_data` call for command `0x36` in `splash_screen.c`.
+The display orientation is owned by `display/display.c`; do not tune MADCTL in
+this component.  The stable hardware setting is documented in
+`docs/HARDWARE.md`.
+
+`png_to_rgb565.py` writes byte-swapped RGB565 values.  `display_draw_row_raw()`
+mirrors each row left-right and sends those bytes directly.  Repacking splash
+pixels through the normal host-order RGB565 path corrupts BYUI blue into a
+brown/green colour.
 
 ## SPI bus sharing
 
-`splash_screen_run()` initialises SPI2_HOST and leaves it running.  To add
-the SD-card device afterwards, call `spi_bus_add_device()` with CS pin 3 —
-there is no need to reinitialise the bus.
+`display_init()` initialises SPI2_HOST and leaves it running.  To add the
+SD-card device afterwards, call `spi_bus_add_device()` with CS pin 3 — there is
+no need to reinitialise the bus.
