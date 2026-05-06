@@ -28,7 +28,23 @@
 #define DISP_PIN_MOSI  3
 #define DISP_PIN_MISO  -1  /* write-only — no MISO on this display */
 #define DISP_SPI_HOST  SPI2_HOST
-#define DISP_SPI_FREQ  SPI_MASTER_FREQ_40M
+/*
+ * SPI CLOCK — must stay ≤ 10 MHz.
+ * At 40 MHz the panel works fine on a clean power-on, but when the
+ * loader is re-entered after a student OTA app has been running, the
+ * very first MADCTL write (cmd 0x36 / value 0x60) silently fails to
+ * latch and the chip stays at default MADCTL=0x00 — which renders
+ * everything rotated 90° CW + horizontally mirrored relative to the
+ * intended landscape orientation. ili9341_init_regs() completes
+ * without SPI error, RST is observed to drive low/high correctly, but
+ * the panel doesn't apply the byte. Dropping to 10 MHz gives enough
+ * setup margin that both paths latch reliably. Do NOT raise this
+ * without testing both:
+ *   1. Cold boot (power-on or hardware reset) into the loader.
+ *   2. BOOT-pressed re-entry into the loader after a student OTA
+ *      app has been running for a while (the failure mode).
+ */
+#define DISP_SPI_FREQ  SPI_MASTER_FREQ_10M
 
 static const char *TAG = "display";
 static spi_device_handle_t s_spi;
