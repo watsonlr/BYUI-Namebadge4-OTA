@@ -28,22 +28,6 @@
 #define DISP_PIN_MOSI  3
 #define DISP_PIN_MISO  -1  /* write-only — no MISO on this display */
 #define DISP_SPI_HOST  SPI2_HOST
-/*
- * SPI CLOCK — must stay ≤ 10 MHz.
- * At 40 MHz the panel works fine on a clean power-on, but when the
- * loader is re-entered after a student OTA app has been running, the
- * very first MADCTL write (cmd 0x36 / value 0x60) silently fails to
- * latch and the chip stays at default MADCTL=0x00 — which renders
- * everything rotated 90° CW + horizontally mirrored relative to the
- * intended landscape orientation. ili9341_init_regs() completes
- * without SPI error, RST is observed to drive low/high correctly, but
- * the panel doesn't apply the byte. Dropping to 10 MHz gives enough
- * setup margin that both paths latch reliably. Do NOT raise this
- * without testing both:
- *   1. Cold boot (power-on or hardware reset) into the loader.
- *   2. BOOT-pressed re-entry into the loader after a student OTA
- *      app has been running for a while (the failure mode).
- */
 #define DISP_SPI_FREQ  SPI_MASTER_FREQ_10M
 
 static const char *TAG = "display";
@@ -286,9 +270,9 @@ static void disp_data(const uint8_t *data, int len)
 }
 
 /* Set address window, then send RAMWR command so pixels can follow.
- * The panel is mounted with the FPC on the left, so logical 320x240
- * landscape maps y through CASET and x through RASET. RASET is inverted
- * so logical x=0 lands at the mounted left edge. */
+ * MADCTL=0x60 (MX=1, MV=1): hardware landscape. CASET=y, RASET=x direct.
+ * MX reverses pixel scan direction, so glyph columns are rendered LSB-first
+ * to compensate (matching frogger's lcd_driver approach). */
 static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t d[4];
@@ -296,9 +280,7 @@ static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     d[0]=y0>>8; d[1]=y0&0xFF; d[2]=y1>>8; d[3]=y1&0xFF;
     disp_data(d, 4);
     disp_cmd(0x2B);   /* RASET — x */
-    uint16_t px0 = DISPLAY_W - 1 - x1;
-    uint16_t px1 = DISPLAY_W - 1 - x0;
-    d[0]=px0>>8; d[1]=px0&0xFF; d[2]=px1>>8; d[3]=px1&0xFF;
+    d[0]=x0>>8; d[1]=x0&0xFF; d[2]=x1>>8; d[3]=x1&0xFF;
     disp_data(d, 4);
     disp_cmd(0x2C);
 }
@@ -352,7 +334,7 @@ static void ili9341_init_regs(void)
                                            0x31,0xC1,0x48,0x08,0x0F,0x0C,
                                            0x31,0x36,0x0F}, 15);
     disp_cmd(0x11); vTaskDelay(pdMS_TO_TICKS(120)); /* sleep out */
-    disp_cmd(0x36); disp_data((uint8_t[]){0x00}, 1);   /* MADCTL: FPC-left landscape, left-right mirrored */
+    disp_cmd(0x36); disp_data((uint8_t[]){0x60}, 1);   /* MADCTL: MX=1, MV=1 — hardware landscape 320×240 */
     disp_cmd(0x21);                                  /* inversion on — panel default is inverted */
     disp_cmd(0x29);                                  /* display on */
 }
@@ -468,7 +450,7 @@ void display_draw_char(int x, int y, char c, uint16_t fg, uint16_t bg, int scale
         /* Build the pixel run for this scaled row. */
         int bi = 0;
         for (int fc = 0; fc < DISPLAY_FONT_W; fc++) {
-            bool lit = (bits >> (DISPLAY_FONT_W - 1 - fc)) & 1;
+            bool lit = (bits >> fc) & 1;
             uint8_t hi = lit ? fg_hi : bg_hi;
             uint8_t lo = lit ? fg_lo : bg_lo;
             for (int sx = 0; sx < scale; sx++) {
@@ -519,7 +501,7 @@ static void draw_char_font(int x, int y, char c,
         uint8_t bits = glyph[fr];
         int bi = 0;
         for (int fc = 0; fc < DISPLAY_FONT_W; fc++) {
-            bool lit = (bits >> (DISPLAY_FONT_W - 1 - fc)) & 1;
+            bool lit = (bits >> fc) & 1;
             uint8_t hi = lit ? fg_hi : bg_hi;
             uint8_t lo = lit ? fg_lo : bg_lo;
             for (int sx = 0; sx < scale; sx++) {
@@ -578,7 +560,7 @@ void display_draw_row_raw(int x, int y, int w, const uint16_t *pixels)
 {
     static uint8_t row_buf[DISPLAY_W * 2];
     for (int i = 0; i < w; i++) {
-        uint16_t px = pixels[w - 1 - i];
+        uint16_t px = pixels[i];
         row_buf[i * 2] = (uint8_t)(px & 0xFF);
         row_buf[i * 2 + 1] = (uint8_t)(px >> 8);
     }
