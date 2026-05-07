@@ -71,11 +71,69 @@ static int                s_retries   = 0;
 static void show_status(const char *line1, const char *line2)
 {
     display_fill(DISPLAY_COLOR_BLACK);
-    display_text_ctx_t ctx = DISPLAY_CTX(DISPLAY_FONT_SANS, 1,
-                                          DISPLAY_COLOR_WHITE,
-                                          DISPLAY_COLOR_BLACK);
-    if (line1) display_print(&ctx,  8, 108, line1);
-    if (line2) display_print(&ctx,  8, 124, line2);
+    if (line1) {
+        int w = (int)strlen(line1) * DISPLAY_FONT_W * 2;
+        int x = (DISPLAY_W - w) / 2;
+        if (x < 0) x = 0;
+        display_draw_string(x, line2 ? 96 : 104,
+                            line1, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+    }
+    if (line2) {
+        int w = (int)strlen(line2) * DISPLAY_FONT_W * 2;
+        int x = (DISPLAY_W - w) / 2;
+        if (x < 0) x = 0;
+        display_draw_string(x, 120,
+                            line2, DISPLAY_COLOR_YELLOW, DISPLAY_COLOR_BLACK, 2);
+    }
+}
+
+/* ── Animated indeterminate bar (used while fetching catalog) ─────── */
+#define FETCH_BAR_X      20
+#define FETCH_BAR_Y      148
+#define FETCH_BAR_W      280
+#define FETCH_BAR_H      22
+#define FETCH_BLOCK_W    70
+
+static volatile bool  s_fetch_anim_run = false;
+static TaskHandle_t   s_fetch_anim_task = NULL;
+
+static void fetch_anim_task(void *arg)
+{
+    int pos = 0, dir = 1;
+    while (s_fetch_anim_run) {
+        display_fill_rect(FETCH_BAR_X, FETCH_BAR_Y,
+                          FETCH_BAR_W, FETCH_BAR_H, DISPLAY_RGB565(40, 40, 40));
+        display_fill_rect(FETCH_BAR_X + pos, FETCH_BAR_Y,
+                          FETCH_BLOCK_W, FETCH_BAR_H, DISPLAY_COLOR_BLUE);
+        pos += dir * 10;
+        if (pos + FETCH_BLOCK_W >= FETCH_BAR_W) { pos = FETCH_BAR_W - FETCH_BLOCK_W; dir = -1; }
+        if (pos <= 0)                            { pos = 0;                            dir =  1; }
+        vTaskDelay(pdMS_TO_TICKS(60));
+    }
+    vTaskDelete(NULL);
+}
+
+static void show_fetching(const char *msg)
+{
+    display_fill(DISPLAY_COLOR_BLACK);
+    int tw = (int)strlen(msg) * DISPLAY_FONT_W * 2;
+    display_draw_string((DISPLAY_W - tw) / 2, 96,
+                        msg, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+    /* Bar outline */
+    display_fill_rect(FETCH_BAR_X - 2, FETCH_BAR_Y - 2, FETCH_BAR_W + 4, 2,  DISPLAY_COLOR_WHITE);
+    display_fill_rect(FETCH_BAR_X - 2, FETCH_BAR_Y + FETCH_BAR_H, FETCH_BAR_W + 4, 2, DISPLAY_COLOR_WHITE);
+    display_fill_rect(FETCH_BAR_X - 2, FETCH_BAR_Y - 2, 2, FETCH_BAR_H + 4,  DISPLAY_COLOR_WHITE);
+    display_fill_rect(FETCH_BAR_X + FETCH_BAR_W, FETCH_BAR_Y - 2, 2, FETCH_BAR_H + 4, DISPLAY_COLOR_WHITE);
+    display_fill_rect(FETCH_BAR_X, FETCH_BAR_Y, FETCH_BAR_W, FETCH_BAR_H, DISPLAY_RGB565(40, 40, 40));
+    s_fetch_anim_run = true;
+    xTaskCreate(fetch_anim_task, "fetch_anim", 2048, NULL, 5, &s_fetch_anim_task);
+}
+
+static void stop_fetching(void)
+{
+    s_fetch_anim_run = false;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    s_fetch_anim_task = NULL;
 }
 
 static void show_wifi_status(const char *label, const char *ssid)
@@ -104,11 +162,11 @@ static void show_wifi_status(const char *label, const char *ssid)
 #define PROG_BAR_W  280
 #define PROG_BAR_H  24
 
-static void show_download_progress(const char *name, int pct,
+static void show_download_progress(const char *name, uint32_t version, int pct,
                                    int kb_done, int kb_total)
 {
     /* On the first call (pct == 0) draw the static background elements:
-     * title, app name, bar border, and initial black fill.
+     * title, app name, version, bar border, and initial black fill.
      * On subsequent calls only the bar fill and percentage text are
      * redrawn — no full-screen clear, so there is no flash. */
     static bool s_bg_drawn = false;
@@ -118,18 +176,19 @@ static void show_download_progress(const char *name, int pct,
         s_bg_drawn = true;
         display_fill(DISPLAY_COLOR_BLACK);
 
-        /* "Downloading..." at scale 2, centred */
-        const char *title = "Downloading...";
+        /* "Downloading {name}" at scale 2, centred */
+        char title[OTA_APP_NAME_MAX + 16];
+        snprintf(title, sizeof(title), "Downloading %s", name ? name : "");
         int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
         display_draw_string((DISPLAY_W - tw) / 2, 72,
                             title, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
 
-        /* App name at scale 2 — same size as "Downloading..." */
-        if (name && name[0]) {
-            int nw = (int)strlen(name) * DISPLAY_FONT_W * 2;
-            display_draw_string((DISPLAY_W - nw) / 2, 98,
-                                name, DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 2);
-        }
+        /* "Version xx" on the next line */
+        char ver_buf[24];
+        snprintf(ver_buf, sizeof(ver_buf), "Version %" PRIu32, version);
+        int vw = (int)strlen(ver_buf) * DISPLAY_FONT_W * 2;
+        display_draw_string((DISPLAY_W - vw) / 2, 98,
+                            ver_buf, DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 2);
 
         /* White border (4 strips) — drawn once, never touched again */
         display_fill_rect(PROG_BAR_X - 2, PROG_BAR_Y - 2, PROG_BAR_W + 4, 2,
@@ -390,7 +449,7 @@ static esp_err_t http_stream_and_flash(const char *url, int expected_size,
         int pct = (int)(100LL * total / expected_size);
         if (pct / 2 != last_pct / 2) {
             last_pct = pct;
-            show_download_progress(name, pct,
+            show_download_progress(name, 0, pct,
                                    total / 1024, expected_size / 1024);
         }
     }
@@ -538,18 +597,20 @@ ota_result_t ota_manager_fetch_catalog(ota_catalog_t *out)
     }
     ESP_LOGI(TAG, "WiFi connected");
 
-    /* Fetch manifest JSON */
-    show_status("Fetching app catalog...", NULL);
+    /* Fetch manifest JSON — show animated bar while waiting */
+    show_fetching("Fetching App Catalog");
 
     static char manifest_json[4096];
     int manifest_len = 0;
     if (http_get_text(mfst_url, manifest_json, sizeof(manifest_json),
                       &manifest_len) != ESP_OK) {
+        stop_fetching();
         ESP_LOGE(TAG, "Manifest fetch failed: %s", mfst_url);
         show_status("Manifest fetch failed", NULL);
         wifi_sta_disconnect();
         return OTA_RESULT_NO_MANIFEST;
     }
+    stop_fetching();
     ESP_LOGI(TAG, "Manifest (%d B) fetched", manifest_len);
 
     /* Parse manifest — expected format: bare JSON array */
@@ -652,7 +713,7 @@ ota_result_t ota_manager_flash_app(const ota_app_entry_t *app)
     }
 
     /* Stream + hash + flash */
-    show_download_progress(app->name, 0, 0, app->size / 1024);
+    show_download_progress(app->name, app->version, 0, 0, app->size / 1024);
     esp_err_t err = http_stream_and_flash(app->url, app->size, app->sha256,
                                           app->name);
     if (err != ESP_OK) {
@@ -663,7 +724,7 @@ ota_result_t ota_manager_flash_app(const ota_app_entry_t *app)
 
     /* Success — reboot into new partition */
     ESP_LOGI(TAG, "OTA complete — rebooting");
-    show_status("Update complete!", "Rebooting...");
+    show_status("Download Complete", "Rebooting...");
     vTaskDelay(pdMS_TO_TICKS(1500));
     /* White fill lets TN pixels settle to a clean state so the student app
      * does not inherit the loader menu ghost on its first frame. */
@@ -834,7 +895,7 @@ static esp_err_t download_and_stage(const char *url, uint32_t flash_addr,
         int pct = (int)(100LL * total / content_len);
         if (pct / 2 != last_pct / 2) {
             last_pct = pct;
-            show_download_progress(name, pct, total / 1024, content_len / 1024);
+            show_download_progress(name, 0, pct, total / 1024, content_len / 1024);
         }
     }
 

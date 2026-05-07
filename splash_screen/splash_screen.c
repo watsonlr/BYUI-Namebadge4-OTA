@@ -19,7 +19,7 @@
 /* Delay between revealing each row (ms).  4 ms → ~1 s total scroll. */
 #define SCROLL_ROW_DELAY_MS  4
 /* How long to hold the completed image before returning (ms). */
-#define SPLASH_HOLD_MS       2000
+#define SPLASH_HOLD_MS       1000
 
 static const char *TAG = "splash";
 
