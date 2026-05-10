@@ -19,10 +19,18 @@
  * ROM SPI functions that bypass all flash-protection checks, then trigger a
  * second software reset so the new partition table takes effect.
  *
- * ── Duty 2: Factory-escape via BOOT button (hardware resets only) ────────────
+ * ── Duty 2: Factory-escape (hardware resets only) ────────────────────────────
  *
- * GPIO 0 has a 470 Ω pull-up to 3.3 V and a button to GND.
- * Press RESET → release RESET → press BOOT within ~500 ms → factory boots.
+ * BOOT button: press RESET → release RESET → press BOOT (GPIO 0) within
+ * ~500 ms.  GPIO 0 has a 470 Ω external pull-up — reads reliably without
+ * settle delay.  50 × 10 ms polls = 500 ms window; single LOW triggers.
+ *
+ * WHY NOT BTN-A / BTN-B (GPIO 34/33):
+ * GPIO 33 = MSPI_IOMUX_PIN_NUM_D4 and GPIO 34 = MSPI_IOMUX_PIN_NUM_D5 —
+ * OPI PSRAM data lines.  MSPI_FUNC_NUM = 0 means their IO_MUX resets to
+ * MCU_SEL=0 (MSPI native function) after every hardware reset.  The MSPI
+ * controller in reset state actively drives them LOW, so they always read
+ * LOW regardless of button state, making reliable button detection impossible.
  */
 
 #include "esp_rom_sys.h"        /* esp_rom_printf, esp_rom_delay_us  */
@@ -41,6 +49,7 @@
 #define FACTORY_SIZE  (1280u * 1024u)
 
 #define GPIO_BOOT   0
+/* GPIO 33/34 (BTN-A/B) are OPI PSRAM MSPI D4/D5 — unusable in bootloader. */
 
 /* ── v2: flash-based detection ───────────────────────────────────── *
  * The app writes a multi_flash_hdr_t to STAGE_HDR_ADDR before restart.*
@@ -214,24 +223,19 @@ void bootloader_after_init(void)
         return;
     }
 
-    /* ── Hardware reset: poll BOOT button for ~500 ms ──────────────── *
-     * GPIO 0 has a 470 Ω external pull-up — reads reliably without any
-     * settle delay.  MCU_SEL=1 (GPIO matrix), FUN_IE=1 (input enable). *
-     * A+B combo was removed: internal pull-ups on GPIO 33/34 are too   *
-     * weak to overcome post-reset floating state, causing false trips.  */
-    REG_WRITE(IO_MUX_GPIO0_REG, (1u << 12) | (1u << 9));
+    /* ── BOOT button: factory escape — 500 ms window after RESET ─────── *
+     * Press RESET, release it, then press BOOT (GPIO 0) within ~500 ms.  *
+     * GPIO 0 has a 470 Ω external pull-up — reads reliably without delay.*
+     * 50 × 10 ms = 500 ms window; single LOW reading triggers escape.   */
+    REG_WRITE(IO_MUX_GPIO0_REG, (1u << 12) | (1u << 9));  /* MCU_SEL=1, IE=1 */
 
-    bool boot_pressed = false;
-    for (int i = 0; i < 50; i++) {        /* 50 × 10 ms = 500 ms */
+    for (int i = 0; i < 50; i++) {
         esp_rom_delay_us(10000);
         if (!(REG_READ(GPIO_IN_REG) & BIT(GPIO_BOOT))) {
-            boot_pressed = true;
-            break;
+            esp_rom_printf("[factory_switch] BOOT pressed — factory escape\n");
+            esp_rom_spiflash_erase_sector(OTADATA_SECTOR_0);
+            esp_rom_spiflash_erase_sector(OTADATA_SECTOR_1);
+            return;
         }
-    }
-
-    if (boot_pressed) {
-        esp_rom_spiflash_erase_sector(OTADATA_SECTOR_0);
-        esp_rom_spiflash_erase_sector(OTADATA_SECTOR_1);
     }
 }

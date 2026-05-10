@@ -61,20 +61,23 @@ The factory-escape logic lives in the **custom 2nd-stage bootloader**
 
 ```
 Power On → ROM → 2nd-stage bootloader (factory_switch hook)
-  Software reset?      → leave otadata intact, boot normally
-  BOOT pressed ≤500 ms → erase otadata sectors (0xF000–0x10FFF)
-  otadata valid?       → boot ota_0 / ota_1   (student app)
-  otadata blank?       → boot factory          (this loader)
+  Software reset?           → leave otadata intact, boot normally
+  BOOT pressed ≤500 ms      → erase otadata sectors (0xF000–0x10FFF)
+  otadata valid?            → boot ota_0 / ota_1   (student app)
+  otadata blank?            → boot factory          (this loader)
 ```
 
-**Factory escape gesture:** press RESET, release it, then press BOOT (GPIO 0)
-within ~500 ms. GPIO 0 has a 470 Ω external pull-up — no debounce cap —
-so it reads reliably in bootloader context without settling delay.
+**Factory escape gesture:**
+
+**BOOT button after RESET** — press RESET, release, press BOOT (GPIO 0) within ~500 ms. GPIO 0 has a 470 Ω external pull-up; reads reliably with no settling delay needed. 50 × 10 ms polls; single LOW triggers escape.
+
+**Why not BTN-A / BTN-B (GPIO 34/33):** These are `MSPI_IOMUX_PIN_NUM_D5` / `MSPI_IOMUX_PIN_NUM_D4` — the OPI PSRAM data lines D5 and D4. `MSPI_FUNC_NUM = 0` means their IO_MUX resets to MCU_SEL=0 (MSPI native function) after hardware RESET, not MCU_SEL=1 (GPIO matrix). The MSPI controller in reset state drives them LOW regardless of button state — detection is impossible.
 
 **Factory Loader always runs the UI** — it never redirects to an OTA app.
 The bootloader handles that redirect before the factory app even starts.
 
 **Factory Loader UI flow:**
+
 1. Full peripheral init (display, LEDs, NVS)
 2. Splash screen + BYUI-blue LED glow
 3. `wifi_config_is_configured()`? — if NO → captive portal → then menu; if YES → menu
@@ -115,7 +118,7 @@ The bootloader handles that redirect before the factory app even starts.
 - **PSRAM:** available only after 2nd-stage bootloader. Used for OTA buffers, JSON parsing, display framebuffers.
 - **Factory partition:** `esp_https_ota` hardcodes writes to OTA slots — factory cannot be overwritten by OTA. Only `idf.py flash` over USB can overwrite it.
 - **Rollback:** apps must call `esp_ota_mark_app_valid_cancel_rollback()` after successful startup; crash before that → automatic fallback to factory.
-- **BOOT button factory escape:** implemented in `bootloader_components/factory_switch/factory_switch.c` via `bootloader_after_init()` hook. On hardware reset, polls GPIO 0 (BOOT) for up to 500 ms (50 × 10 ms); if LOW detected, erases otadata sectors so bootloader falls back to factory. Software resets skip the poll entirely (otadata left intact). GPIO 0 has a 470 Ω external pull-up and no debounce capacitor — reads reliably in bootloader context.
+- **Factory escape gesture — BOOT only:** Implemented in `bootloader_components/factory_switch/factory_switch.c` via `bootloader_after_init()` hook. On hardware reset, polls GPIO 0 (BOOT) 50 × 10 ms = 500 ms; single LOW reading erases otadata and returns (factory boots). Software resets skip the poll entirely (otadata left intact). BTN-A (GPIO 34) and BTN-B (GPIO 33) cannot be used in the bootloader — they are OPI PSRAM data lines (MSPI D5/D4, `MSPI_FUNC_NUM=0`); the MSPI controller drives them LOW in reset state regardless of button state.
 - **Button debounce — LP pad issue:** GPIOs 0–21 are LP I/O pads. A `while (gpio_get_level() == 0)` spin-wait inside the button task can block forever on these pads after a software reset, even after `gpio_config()`. UP=GPIO 11 and LEFT=GPIO 21 are affected. Solution: time-based state machine using `esp_timer_get_time()` — no spin-waits anywhere. Task stack must be **4096 bytes** (not 2048) because `esp_timer_get_time()` has a deeper call chain than expected.
 - **Button debounce — state machine:** `STATE_IDLE → STATE_DEBOUNCING → STATE_FIRED`. Both press (30 ms continuous LOW) and release (30 ms continuous HIGH) are debounced independently. One physical press = exactly one queue event, regardless of contact bounce.
 - **WiFi reconfigure after failed OTA:** `ota_manager_fetch_catalog()` initialises `esp_netif` and the default event loop but does not deinit them on failure. Calling `portal_mode_run()` afterward causes `wifi_config_start()` → `start_softap()` → `ESP_ERROR_CHECK(esp_netif_init())` to abort with `ESP_ERR_INVALID_STATE`. Fix: erase `user_data` NVS partition then `esp_restart()` — the factory loader reboots clean and auto-runs the portal since `wifi_config_is_configured()` returns false (nick key gone).
