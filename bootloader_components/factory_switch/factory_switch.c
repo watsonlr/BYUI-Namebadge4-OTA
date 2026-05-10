@@ -61,6 +61,13 @@
 #define RTC_FLAG_ADDR      0x600FFFF0u
 #define UPDATE_MAGIC       0xFA510A0Bu   /* v1 — single binary → factory */
 
+/* ── BOOT gesture flag ───────────────────────────────────────────── *
+ * Written here when the BOOT escape is detected on a hardware reset. *
+ * The factory app reads this to know it was entered via the gesture. *
+ * Location: 8 bytes before the factory_update_flag_t (0x600FFFF0).  */
+#define BOOT_GESTURE_FLAG_ADDR  0x600FFFE8u
+#define BOOT_GESTURE_MAGIC      0xB007B007u
+
 typedef struct {
     uint32_t magic;
     uint32_t staging_offset;
@@ -233,6 +240,9 @@ void bootloader_after_init(void)
         esp_rom_delay_us(10000);
         if (!(REG_READ(GPIO_IN_REG) & BIT(GPIO_BOOT))) {
             esp_rom_printf("[factory_switch] BOOT pressed — factory escape\n");
+            /* Signal to the factory app that it was entered via BOOT gesture
+             * so it can suppress the "how to return" hint screen.          */
+            *((volatile uint32_t *)BOOT_GESTURE_FLAG_ADDR) = BOOT_GESTURE_MAGIC;
             esp_rom_spiflash_erase_sector(OTADATA_SECTOR_0);
             esp_rom_spiflash_erase_sector(OTADATA_SECTOR_1);
             return;

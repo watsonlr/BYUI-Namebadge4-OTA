@@ -8,6 +8,8 @@
 #include "wifi_config.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,6 +18,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
+
+/* Provided by main.c — sampled at the very top of app_main() before any init. */
+extern bool loader_entered_via_boot_gesture(void);
 
 #define TAG              "loader_menu"
 /* Version defines live in loader_menu.h so factory_self_update can read them. */
@@ -29,8 +34,6 @@
 #define COLOR_YELLOW      DISPLAY_RGB565(255, 200,   0)
 #define COLOR_FOOTER_BG   DISPLAY_RGB565( 24,  24,  24)
 #define COLOR_DIM_WHITE   DISPLAY_RGB565(180, 180, 180)
-#define COLOR_GREEN_OK    DISPLAY_RGB565(  0, 200,  80)
-#define COLOR_WARN_BG     DISPLAY_RGB565( 80,   0,   0)
 
 /* ── Layout constants (320 × 240 landscape) ────────────────────────── */
 #define HEADER_Y      0
@@ -52,11 +55,11 @@
 /* ── Main menu labels ──────────────────────────────────────────────── */
 static const char *ITEM_LABELS[NUM_ITEMS] = {
     "OTA App Download",
+    "Return to Last App",
     "SDCard Apps",
     "Reset Wifi/Config",
     "Full Factory Reset",
     "Load MicroPython",
-    "Program w/ESP-IDF",
 };
 
 static const char *item_label(int idx)
@@ -273,6 +276,8 @@ static int run_app_select_menu(const ota_catalog_t *catalog)
     }
 }
 
+static bool s_hint_shown = false;  /* suppress repeat within one session */
+
 /* ── Action: OTA download ──────────────────────────────────────────── */
 
 /* Static catalog buffer — too large for the stack. */
@@ -280,6 +285,14 @@ static ota_catalog_t   s_catalog;
 
 static void action_ota_download(void)
 {
+    /* Show the RESET / BOOT-escape hint unless the user already proved they
+     * know the gesture (factory_switch set the RTC flag on BOOT press), or
+     * we already showed it this session. */
+    if (!s_hint_shown && !loader_entered_via_boot_gesture()) {
+        loader_menu_show_boot_hint();
+    }
+    s_hint_shown = true;
+
     /* ── Step 1: fetch catalog ─────────────────────────────────────── */
     ota_result_t r = ota_manager_fetch_catalog(&s_catalog);
 
@@ -358,6 +371,41 @@ static void action_ota_download(void)
     wait_any_button();
 }
 
+/* ── Action: Return to Last App ────────────────────────────────────── *
+ * Finds the first OTA partition containing a valid image (magic 0xE9), *
+ * sets it as the boot target, and restarts.  Shows an error screen if  *
+ * no valid app is found (e.g. badge has never received an OTA update). */
+
+static void action_return_to_app(void)
+{
+    const esp_partition_t *ota0 = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
+    const esp_partition_t *ota1 = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
+
+    const esp_partition_t *target = NULL;
+    uint8_t magic = 0;
+    if (ota0 && esp_partition_read(ota0, 0, &magic, 1) == ESP_OK && magic == 0xE9)
+        target = ota0;
+    else if (ota1 && esp_partition_read(ota1, 0, &magic, 1) == ESP_OK && magic == 0xE9)
+        target = ota1;
+
+    if (target == NULL) {
+        display_fill(DISPLAY_COLOR_BLACK);
+        draw_header_titled("Return to Last App");
+        const char *msg = "No app installed";
+        int mw = (int)strlen(msg) * DISPLAY_FONT_W * 2;
+        display_draw_string((DISPLAY_W - mw) / 2, 110,
+                            msg, DISPLAY_COLOR_RED, DISPLAY_COLOR_BLACK, 2);
+        draw_footer("Press any button to return");
+        wait_any_button();
+        return;
+    }
+
+    esp_ota_set_boot_partition(target);
+    esp_restart();
+}
+
 /* ── Action: Load from SD Card (stub) ─────────────────────────────── */
 
 static void action_sd_load(void)
@@ -378,62 +426,6 @@ static void action_sd_load(void)
 static void action_configure_wifi(void)
 {
     portal_mode_run(0);
-}
-
-/* ── Action: USB Program ───────────────────────────────────────────── *
- * Shows flashing instructions with a clear warning to use the student
- * template project and idf.py app-flash (not idf.py flash).
- * Plain idf.py flash overwrites factory_switch + the partition table,
- * which bricks the badge.                                             */
-
-static void action_usb_program(void)
-{
-    display_fill(DISPLAY_COLOR_BLACK);
-
-    /* Header */
-    display_fill_rect(0, 0, DISPLAY_W, 30, COLOR_HEADER_BG);
-    const char *title = "Program w/ESP-IDF";
-    int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
-    display_draw_string((DISPLAY_W - tw) / 2, 7,
-                        title, DISPLAY_COLOR_WHITE, COLOR_HEADER_BG, 2);
-
-    /* Warning banner */
-    display_fill_rect(0, 31, DISPLAY_W, 18, COLOR_WARN_BG);
-    const char *warn = "! Use student template project !";
-    int ww = (int)strlen(warn) * DISPLAY_FONT_W;
-    display_draw_string((DISPLAY_W - ww) / 2, 35,
-                        warn, COLOR_YELLOW, COLOR_WARN_BG, 1);
-
-    /* NEVER / SAFE command lines */
-    display_draw_string( 8, 60, "NEVER:", DISPLAY_COLOR_RED,   DISPLAY_COLOR_BLACK, 1);
-    display_draw_string(57, 60, "idf.py flash",
-                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
-
-    display_draw_string( 8, 78, "SAFE: ", COLOR_GREEN_OK,     DISPLAY_COLOR_BLACK, 1);
-    display_draw_string(57, 78, "idf.py app-flash -p PORT",
-                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
-
-    /* Short explanation */
-    display_draw_string(8, 102,
-                        "'idf.py flash' overwrites the",
-                        COLOR_DIM_WHITE, DISPLAY_COLOR_BLACK, 1);
-    display_draw_string(8, 118,
-                        "loader -- this bricks the badge.",
-                        COLOR_DIM_WHITE, DISPLAY_COLOR_BLACK, 1);
-
-    /* Template URL */
-    display_draw_string(8, 142,
-                        "Student template project:",
-                        COLOR_DIM_WHITE, DISPLAY_COLOR_BLACK, 1);
-    display_draw_string(8, 158,
-                        "github.com/watsonlr/",
-                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
-    display_draw_string(8, 174,
-                        "  namebadge-apps  (see README)",
-                        DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 1);
-
-    draw_footer("Press any button to return");
-    wait_any_button();
 }
 
 /* ── Action: Update SD recovery (stub) ────────────────────────────── */
@@ -516,6 +508,61 @@ static void action_load_micropython(void)
     wait_any_button();
 }
 
+/* ── Boot-hint info screen (shown once after first install / loader update) *
+ *                                                                            *
+ * Light yellow background, black text at scale 2.  The word "RESET" is      *
+ * drawn twice (offset 1 px right) in dark red for a faux-bold effect.       *
+ * ──────────────────────────────────────────────────────────────────────── */
+
+#define HINT_BG     DISPLAY_RGB565(255, 255, 180)   /* light yellow */
+#define HINT_FG     DISPLAY_COLOR_BLACK
+#define HINT_RED    DISPLAY_RGB565(180, 0, 0)        /* dark red for RESET */
+
+static void hint_draw_reset(int x, int y)
+{
+    display_draw_string(x,   y, "RESET", HINT_RED, HINT_BG, 2);
+    display_draw_string(x+1, y, "RESET", HINT_RED, HINT_BG, 2); /* faux bold */
+}
+
+void loader_menu_show_boot_hint(void)
+{
+    char title[32];
+    snprintf(title, sizeof(title), "BYU-I Loader v%d.%d", HW_VERSION, LOADER_VERSION);
+
+    display_fill(DISPLAY_COLOR_BLACK);
+
+    /* Blue header */
+    display_fill_rect(0, 0, DISPLAY_W, 28, COLOR_BYUI_BLUE);
+    int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
+    int tx = (DISPLAY_W - tw) / 2;
+    if (tx < 4) tx = 4;
+    display_draw_string(tx, 6, title, DISPLAY_COLOR_WHITE, COLOR_BYUI_BLUE, 2);
+
+    /* Light yellow content area */
+    display_fill_rect(0, 28, DISPLAY_W, FOOTER_Y - 28, HINT_BG);
+
+    /* "RESET Button:"  — RESET in faux-bold dark red */
+    hint_draw_reset(8, 40);
+    display_draw_string(8 + 5 * DISPLAY_FONT_W * 2, 40,
+                        " Button:", HINT_FG, HINT_BG, 2);
+
+    /* "  Restarts App"  (indented) */
+    display_draw_string(24, 64, "Restarts App", HINT_FG, HINT_BG, 2);
+
+    /* "Return to Loader:"  (section break above) */
+    display_draw_string(8, 100, "Return to Loader:", HINT_FG, HINT_BG, 2);
+
+    /* "Press/Release RESET"  — RESET in faux-bold dark red */
+    display_draw_string(8, 124, "Press/Release ", HINT_FG, HINT_BG, 2);
+    hint_draw_reset(8 + 14 * DISPLAY_FONT_W * 2, 124);
+
+    /* "  Press/Hold BOOT"  (indented) */
+    display_draw_string(24, 148, "Press/Hold BOOT", HINT_FG, HINT_BG, 2);
+
+    draw_footer("Press any button to continue");
+    wait_any_button();
+}
+
 /* ── Public entry point ────────────────────────────────────────────── */
 
 void loader_menu_run(void)
@@ -541,11 +588,11 @@ void loader_menu_run(void)
                      selection + 1, item_label(selection));
             switch (selection) {
             case 0:  action_ota_download();        break;
-            case 1:  action_sd_load();             break;
-            case 2:  action_reset_wifi_config();   break;
-            case 3:  action_reset_board_factory(); break;
-            case 4:  action_load_micropython();    break;
-            case 5:  action_usb_program();         break;
+            case 1:  action_return_to_app();       break;
+            case 2:  action_sd_load();             break;
+            case 3:  action_reset_wifi_config();   break;
+            case 4:  action_reset_board_factory(); break;
+            case 5:  action_load_micropython();    break;
             default: break;
             }
             display_fill(DISPLAY_COLOR_BLACK);

@@ -176,18 +176,26 @@ static void show_download_progress(const char *name, uint32_t version, int pct,
         s_bg_drawn = true;
         display_fill(DISPLAY_COLOR_BLACK);
 
-        /* "Downloading {name}" at scale 2, centred */
-        char title[OTA_APP_NAME_MAX + 16];
-        snprintf(title, sizeof(title), "Downloading %s", name ? name : "");
-        int tw = (int)strlen(title) * DISPLAY_FONT_W * 2;
-        display_draw_string((DISPLAY_W - tw) / 2, 72,
-                            title, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+        /* "Loading" label at scale 2, centred */
+        const char *loading_str = "Loading";
+        int lw = (int)strlen(loading_str) * DISPLAY_FONT_W * 2;
+        display_draw_string((DISPLAY_W - lw) / 2, 60,
+                            loading_str, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
 
-        /* "Version xx" on the next line */
+        /* App name on its own line at scale 2, centred */
+        if (name && name[0]) {
+            int nw = (int)strlen(name) * DISPLAY_FONT_W * 2;
+            int nx = (DISPLAY_W - nw) / 2;
+            if (nx < 0) nx = 0;
+            display_draw_string(nx, 82,
+                                name, DISPLAY_COLOR_WHITE, DISPLAY_COLOR_BLACK, 2);
+        }
+
+        /* "Version xx" below the name */
         char ver_buf[24];
         snprintf(ver_buf, sizeof(ver_buf), "Version %" PRIu32, version);
         int vw = (int)strlen(ver_buf) * DISPLAY_FONT_W * 2;
-        display_draw_string((DISPLAY_W - vw) / 2, 98,
+        display_draw_string((DISPLAY_W - vw) / 2, 104,
                             ver_buf, DISPLAY_COLOR_CYAN, DISPLAY_COLOR_BLACK, 2);
 
         /* White border (4 strips) — drawn once, never touched again */

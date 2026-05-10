@@ -2,6 +2,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 
 #include "buttons.h"
 #include "display.h"
@@ -13,6 +14,47 @@
 #include "leds.h"
 
 #define TAG "factory_loader"
+
+/* ── Boot-gesture RTC flag ─────────────────────────────────────────── *
+ * factory_switch writes BOOT_GESTURE_MAGIC at BOOT_GESTURE_FLAG_ADDR  *
+ * when the user presses BOOT after RESET.  Read it at the very top of *
+ * app_main() — before buttons_init() or nvs_flash_init() — so that   *
+ * nothing in the ESP-IDF init path can zero-fill the RTC fast memory  *
+ * region before we sample it.                                          */
+#define BOOT_GESTURE_FLAG_ADDR  0x600FFFE8u
+#define BOOT_GESTURE_MAGIC      0xB007B007u
+
+static bool s_entered_via_boot_gesture = false;
+
+bool loader_entered_via_boot_gesture(void)
+{
+    return s_entered_via_boot_gesture;
+}
+
+/* ── NVS flag helpers (user_data / badge_cfg) ──────────────────────── */
+
+static bool nvs_read_flag(const char *key)
+{
+    nvs_flash_init_partition(LOADER_NVS_PARTITION); /* idempotent */
+    nvs_handle_t h;
+    if (nvs_open_from_partition(LOADER_NVS_PARTITION, LOADER_NVS_NAMESPACE,
+                                NVS_READONLY, &h) != ESP_OK) return false;
+    uint8_t v = 0;
+    nvs_get_u8(h, key, &v);
+    nvs_close(h);
+    return v != 0;
+}
+
+static void nvs_write_flag(const char *key, bool val)
+{
+    nvs_flash_init_partition(LOADER_NVS_PARTITION); /* idempotent */
+    nvs_handle_t h;
+    if (nvs_open_from_partition(LOADER_NVS_PARTITION, LOADER_NVS_NAMESPACE,
+                                NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, key, val ? 1 : 0);
+    nvs_commit(h);
+    nvs_close(h);
+}
 
 /* ── Factory loader full initialisation ────────────────────────────── *
  *
@@ -39,7 +81,12 @@ static void run_factory_loader(void)
      * Does nothing if WiFi is not yet configured. */
     factory_self_update_begin();
 
-    splash_screen_run();
+    /* Show the splash only the first time (flag persists in NVS). */
+    if (!nvs_read_flag(LOADER_NVS_KEY_SPLASH)) {
+        splash_screen_run();
+        nvs_write_flag(LOADER_NVS_KEY_SPLASH, true);
+    }
+
     /* Flush any phantom button events queued during boot. */
     buttons_flush_events();
 
@@ -65,5 +112,9 @@ static void run_factory_loader(void)
 
 void app_main(void)
 {
+    volatile uint32_t *rtc_flag = (volatile uint32_t *)BOOT_GESTURE_FLAG_ADDR;
+    s_entered_via_boot_gesture = (*rtc_flag == BOOT_GESTURE_MAGIC);
+    *rtc_flag = 0;
+
     run_factory_loader();
 }

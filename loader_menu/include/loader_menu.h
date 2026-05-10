@@ -25,6 +25,12 @@ extern "C" {
 /** Factory-loader software release number (increment when updating). */
 #define LOADER_SW_VERSION   6
 
+/* NVS location for loader-specific flags (shared partition / namespace with
+ * user wifi config — strings duplicated here to avoid a header dependency). */
+#define LOADER_NVS_PARTITION   "user_data"
+#define LOADER_NVS_NAMESPACE   "badge_cfg"
+#define LOADER_NVS_KEY_SPLASH  "splash_done"
+
 /**
  * @brief Display the loader menu and handle user input indefinitely.
  *
@@ -33,6 +39,15 @@ extern "C" {
  * "coming soon" stubs) will redraw the menu and continue.
  */
 void loader_menu_run(void);
+
+/**
+ * @brief Show the one-time boot-hint info screen.
+ *
+ * Displays how to use RESET and the BOOT escape gesture.  Call this
+ * from main before loader_menu_run() when the NVS boot_hint_done flag
+ * is not set.  Blocks until the user presses any button.
+ */
+void loader_menu_show_boot_hint(void);
 
 #ifdef __cplusplus
 }
